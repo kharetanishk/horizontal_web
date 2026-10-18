@@ -4,8 +4,8 @@ Owner's original brief, exported from the Claude Doc on 2026-10-18
 (https://claude.ai/code/artifact/0aaaa5f9-7327-4892-a2cf-bd03ac545a40, as of 2026-09-29).
 This is the input for every phase. Do not edit it to match later decisions; record changes in docs/DECISIONS.md.
 
-Open question from the brief: backend language. The brief assumes Python (FastAPI) for its AI ecosystem;
-keeping everything in TypeScript was raised but not answered. Treat Python as the working assumption.
+Backend language changed: the backend is Rust, not Python (docs/ADR/0002). Where this brief names Python tools
+(FastAPI, SQLAlchemy, Alembic, LiteLLM, Pydantic, uv, pytest, the MCP Python SDK), ADR 0002 overrides it.
 
 ## Overview
 

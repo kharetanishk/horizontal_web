@@ -12,7 +12,7 @@ This project is driven by the Engineering Factory (`factory status` shows the wo
 
 Rules:
 - MVP = brief phase 1 only (branching canvas). Phases 2-6 are roadmap; do not build them until phase 1 is accepted.
-- Stack is fixed by the brief (pnpm + Turborepo, Next.js + React Flow, FastAPI, Postgres + pgvector, LiteLLM). Add a brief-listed service only when the current phase needs it.
+- Stack: Next.js + TypeScript + React Flow frontend (pnpm + Turborepo); Rust backend (Cargo workspace, Axum, SQLx, Postgres + pgvector). See docs/ADR/0002. The brief's Python choices are replaced. Add a brief-listed service only when the current phase needs it.
 - Do not commit, push, or rewrite git history; the factory checkpoints verified work.
 - Never read, print, or commit secrets (.env, keys, tokens).
 - Mark unverified claims as assumptions. Never invent users, metrics, benchmarks or test results.

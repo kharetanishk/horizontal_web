@@ -12,7 +12,7 @@
       "Bash(pnpm *)",
       "Bash(npx *)",
       "Bash(node *)",
-      "Bash(uv *)"
+      "Bash(cargo *)"
     ]
   },
   "design": {

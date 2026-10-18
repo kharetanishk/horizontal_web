@@ -86,7 +86,7 @@ Challenged: the "who it's for" is broad ("students and self-learners"). Phase 1 
 
 **Legal / compliance**
 - Users' chat content and emails are personal data: needs a privacy notice, account deletion and no logging of message content to third parties without disclosure.
-- Content goes to third-party LLM providers via LiteLLM; their data-use terms must be disclosed to users.
+- Content goes to third-party LLM providers via the backend's LLM gateway; their data-use terms must be disclosed to users.
 - Generated answers may be wrong; add a "may contain errors" notice for a learning context.
 
 **Features that don't serve the core problem in phase 1** (defer): composer, notes, sketchnotes, landing page builder, RAG, learner memory, semantic search, MCP server, knowledge graph, image/video generation. Learner memory (context builder step 3) and RAG (step 5) are phase 3 even though they appear in the context builder order.

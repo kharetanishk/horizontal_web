@@ -1,6 +1,6 @@
 # ADR 0001: Python backend
 
-- Status: accepted
+- Status: superseded by [ADR 0002](0002-rust-backend-supersedes-0001.md)
 - Date: 2026-10-18
 
 ## Context

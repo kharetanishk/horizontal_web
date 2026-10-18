@@ -30,7 +30,7 @@ Cut from phase 1 and why:
 | Redis, ARQ workers, MinIO, Langfuse, sandbox | No phase 1 feature needs a queue, object storage or tracing service; streaming runs in the API request. Add when a phase needs them (CLAUDE.md rule) |
 | Measuring prompt-cache hit rate, small-model routing evals | Phase 5 quality layer. Phase 1 only keeps path prefixes stable and lets the doubt model be set in config |
 | Editing or deleting single nodes | Anchors point at stored text (anchor drift risk); immutable nodes avoid it. Collapse covers hiding unwanted branches |
-| Model picker in the UI | Models per mode are server config via LiteLLM; users don't need the choice to test branching |
+| Model picker in the UI | Models per mode are server config in the LLM gateway; users don't need the choice to test branching |
 
 ## Functional requirements
 
@@ -49,7 +49,7 @@ Each FR is one user-visible capability. Acceptance criteria are under [Acceptanc
 | FR-9 | Nested branches: any node inside a branch can be branched or continued, to any depth | |
 | FR-10 | Path-scoped context: a message at node X is answered using only system prompt (by mode), merged summaries on the path, path messages root→X, the anchor (for branches) and the new message. Sibling branches never reach the model | Context builder steps 1, 2, 4, 6, 7, 8 of the brief |
 | FR-11 | Compaction: when the path exceeds the input token budget, older path messages are replaced by a summary; the most recent messages stay verbatim | Budget is server config. Default 16k input tokens (**assumption**, tune in architecture) |
-| FR-12 | Token counter: each node shows the token count of the context its next message would send (path + summaries + system prompt), updated when the path changes | Provider tokenizer (e.g. tiktoken) |
+| FR-12 | Token counter: each node shows the token count of the context its next message would send (path + summaries + system prompt), updated when the path changes | Provider tokenizer (tiktoken-rs) |
 | FR-13 | Merge back: on a branch, "merge" generates a one-line summary, shows it for the user to edit, and on confirm attaches it to the branch's origin node on the main path and collapses the branch | Mitigates lossy merge: user sees and can fix the summary |
 | FR-14 | Merged summaries are included in context for every node whose path passes through the branch's origin node; the full branch messages are not | |
 | FR-15 | Auto-layout: main path flows top to bottom; branches open to the right of their parent, next to the anchor; new nodes never overlap existing ones | Canvas clutter risk |
@@ -78,14 +78,14 @@ All values are targets for the phase 1 build, verified in tests or by measuremen
 | NFR-10 | Availability | 99% monthly for the single-instance deployment (target; no SLA) |
 | NFR-11 | Durability | Daily Postgres backup with 7-day retention; a completed node is never lost after the stream ends |
 | NFR-12 | Cost | Doubt branches use the model set for doubt mode (can be a smaller model); per-request token usage is recorded on the node (`token_count`, `model`) |
-| NFR-13 | Model portability | All model calls go through LiteLLM; switching the model for a mode is a config change with no code change |
+| NFR-13 | Model portability | All model calls go through the backend's LLM gateway module; switching the model for a mode is a config change with no code change |
 | NFR-14 | Browser support | Latest Chrome, Firefox, Safari on desktop. Mobile is out of scope |
 | NFR-15 | Accessibility | Quick actions, merge, collapse and "back to main" reachable by keyboard; visible focus; text contrast WCAG 2.1 AA |
-| NFR-16 | Type sync | Node types, edge types and anchor shape defined once in `packages/schemas`; generated TS and Pydantic types; CI fails if generated types are stale |
+| NFR-16 | Type sync | Node types, edge types and anchor shape defined once in the Rust backend; Rust types are the source, generating TS (ts-rs) and JSON Schema (schemars); CI fails if generated types are stale |
 
 ## Acceptance criteria
 
-Given/When/Then unless a measurable check is clearer. Each is meant to become an automated test (API: pytest; UI: Playwright; LLM calls stubbed with a fake model unless stated).
+Given/When/Then unless a measurable check is clearer. Each is meant to become an automated test (API: cargo test; UI: Playwright; LLM calls stubbed with a fake model unless stated).
 
 **FR-1 Sign in**
 - AC-1.1 Given a new email, when the user completes sign-in, then a `users` row exists and the canvas list is shown.
