@@ -48,7 +48,7 @@ Each FR is one user-visible capability. Acceptance criteria are under [Acceptanc
 | FR-8 | Quick actions on highlight or node: explain simpler, give an example, why does this work, go deeper, "I think this is wrong"; plus a free-text question | Each maps to a prompt template; the doubt type is stored on the branch for later evals |
 | FR-9 | Nested branches: any node inside a branch can be branched or continued, to any depth | |
 | FR-10 | Path-scoped context: a message at node X is answered using only system prompt (by mode), merged summaries on the path, path messages root→X, the anchor (for branches) and the new message. Sibling branches never reach the model | Context builder steps 1, 2, 4, 6, 7, 8 of the brief |
-| FR-11 | Compaction: when the path exceeds the input token budget, older path messages are replaced by a summary; the most recent messages stay verbatim | Budget is server config. Default 16k input tokens (**assumption**, tune in architecture) |
+| FR-11 | Compaction: when the path exceeds the input token budget, older path messages are replaced by a summary; the most recent messages stay verbatim | Budget is server config. Default 16k tokens of context, of which 2k are reserved for the reply, so 14k for input (**assumption**; see ARCHITECTURE.md context builder) |
 | FR-12 | Token counter: each node shows the token count of the context its next message would send (path + summaries + system prompt), updated when the path changes | Provider tokenizer (tiktoken-rs) |
 | FR-13 | Merge back: on a branch, "merge" generates a one-line summary, shows it for the user to edit, and on confirm attaches it to the branch's origin node on the main path and collapses the branch | Mitigates lossy merge: user sees and can fix the summary |
 | FR-14 | Merged summaries are included in context for every node whose path passes through the branch's origin node; the full branch messages are not | |
@@ -77,7 +77,7 @@ All values are targets for the phase 1 build, verified in tests or by measuremen
 | NFR-9 | Data protection | Message content is not written to application logs; secrets only from environment, never sent to the client; HTTPS in production |
 | NFR-10 | Availability | 99% monthly for the single-instance deployment (target; no SLA) |
 | NFR-11 | Durability | Daily Postgres backup with 7-day retention; a completed node is never lost after the stream ends |
-| NFR-12 | Cost | Doubt branches use the model set for doubt mode (can be a smaller model); per-request token usage is recorded on the node (`token_count`, `model`) |
+| NFR-12 | Cost | Doubt branches use the model set for doubt mode (can be a smaller model); per-request token usage is recorded per LLM call (`llm_usage`) and on the node (`prompt_tokens`, `completion_tokens`, `model`) |
 | NFR-13 | Model portability | All model calls go through the backend's LLM gateway module; switching the model for a mode is a config change with no code change |
 | NFR-14 | Browser support | Latest Chrome, Firefox, Safari on desktop. Mobile is out of scope |
 | NFR-15 | Accessibility | Quick actions, merge, collapse and "back to main" reachable by keyboard; visible focus; text contrast WCAG 2.1 AA |
@@ -88,7 +88,7 @@ All values are targets for the phase 1 build, verified in tests or by measuremen
 Given/When/Then unless a measurable check is clearer. Each is meant to become an automated test (API: cargo test; UI: Playwright; LLM calls stubbed with a fake model unless stated).
 
 **FR-1 Sign in**
-- AC-1.1 Given a new email, when the user completes sign-in, then a `users` row exists and the canvas list is shown.
+- AC-1.1 Given a new allowlisted email, when the user completes sign-in, then a `users` row exists and the canvas list is shown. Given an email that is not allowlisted, signup returns 403 and no row is created.
 - AC-1.2 Given a signed-out visitor, when they request any canvas API, then the response is 401.
 
 **FR-2 Canvases**
@@ -174,7 +174,7 @@ Measured after phase 1 launch. Phase 1 has no tracing service, so instrumentatio
 | Merge edits | Share of merge summaries edited before confirm (proxy for summary quality) | Compare proposed vs. confirmed text in `merge_confirmed` event | ≤ 50% edited |
 | Phase 1 gate: effortless | In moderated sessions with 5 self-learners doing a 20-minute study task: median seconds from highlight to branch question sent, and post-task ease rating (1–7) | Event timestamps + a one-question post-task survey | Median < 10 s; median rating ≥ 6 |
 | Return | Users who come back to a canvas on a second day within 7 days | `nodes.created_at` on ≥ 2 distinct days per user | ≥ 3 of the 5 test users (assumption) |
-| Cost per session | Mean tokens and cost per canvas session | Sum of `nodes.token_count` by `model` | Baseline only; no target until measured |
+| Cost per session | Mean tokens and cost per canvas session | Sum of `llm_usage` tokens by `model` | Baseline only; no target until measured |
 
 ## Roadmap
 

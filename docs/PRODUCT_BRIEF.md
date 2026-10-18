@@ -22,12 +22,19 @@ See [learning/](learning/) and [DAILY_LOG.md](DAILY_LOG.md).
 <!-- factory:status:start -->
 _Auto-generated from recorded factory state. Do not edit inside this block._
 
-**Stage:** design (Design) · profile `standard`
+**Stage:** architecture (Architecture) · profile `standard`
 
 **Verified & accepted work:** none yet
 
-**Open risks:** none recorded
+**Open risks:**
+- F-architecture-L3-1 (high): Compaction cutoff moves on almost every send, so long paths re-summarize before each answer
+- F-architecture-L3-2 (high): After a Postgres outage over 60 s, the sweeper kills live streams and their final writes are silently discarded
+- F-architecture-L3-3 (medium): Prefix-sum token counting on canvas load can't equal assemble() once compaction, truncation, summary caps or mixed tokenizers apply
+- F-architecture-L3-4 (medium): Daily token cap and llm_usage miss calls that error, time out or lose their stream
+- F-architecture-L3-5 (medium): Rate-limit and daily-cap checks aren't ordered against the send transaction
+- F-architecture-L3-6 (medium): The account_deletions re-apply step can't recover deletions made after the restored backup
+- F-architecture-L3-7 (medium): Behavior when a message is sent inside an already-merged branch is undefined
 
 **Next:**
-- `factory run` to continue the design phase
+- `factory run` to continue the architecture phase
 <!-- factory:status:end -->

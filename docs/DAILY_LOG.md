@@ -6,3 +6,4 @@
 - 18:35 decision ADR 0001: Python backend
 - 18:36 decision ADR 0002: Rust backend (supersedes 0001)
 - 18:38 phase research done
+- 18:41 phase design done
