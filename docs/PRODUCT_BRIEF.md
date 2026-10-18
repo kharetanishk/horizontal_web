@@ -22,12 +22,12 @@ See [learning/](learning/) and [DAILY_LOG.md](DAILY_LOG.md).
 <!-- factory:status:start -->
 _Auto-generated from recorded factory state. Do not edit inside this block._
 
-**Stage:** discover (Discover) · profile `standard`
+**Stage:** requirements (Requirements) · profile `standard`
 
 **Verified & accepted work:** none yet
 
 **Open risks:** none recorded
 
 **Next:**
-- `factory run` to continue the discover phase
+- `factory run` to continue the requirements phase
 <!-- factory:status:end -->
