@@ -3,8 +3,22 @@
   "profile": "standard",
   "description": "Learning-focused AI chat on a canvas: every prompt and answer is a node, doubts branch sideways with path-scoped context, and selected nodes compose into notes and sketchnotes.",
   "claude": {
-    "allowed_tools": ["Read", "Edit", "Write", "Glob", "Grep",
-                      "Bash(pnpm *)", "Bash(npx *)", "Bash(node *)", "Bash(uv *)"]
+    "allowed_tools": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash(pnpm *)",
+      "Bash(npx *)",
+      "Bash(node *)",
+      "Bash(uv *)"
+    ]
   },
-  "design": {"url": "http://localhost:3000"}
+  "design": {
+    "url": "http://localhost:3000"
+  },
+  "git": {
+    "allow_push": true
+  }
 }
