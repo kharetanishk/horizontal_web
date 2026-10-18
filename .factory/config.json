@@ -1,0 +1,5 @@
+{
+  "name": "nodemind",
+  "profile": "standard",
+  "description": "Learning-focused AI chat on a canvas: every prompt and answer is a node, doubts branch sideways with path-scoped context, and selected nodes compose into notes and sketchnotes."
+}

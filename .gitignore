@@ -1,0 +1,17 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# dependencies / build / caches
+node_modules/
+.venv/
+__pycache__/
+dist/
+build/
+coverage/
+.DS_Store
+# factory runtime state stays local; only the config is versioned
+.factory/*
+!.factory/config.json
