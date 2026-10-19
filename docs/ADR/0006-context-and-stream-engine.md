@@ -31,7 +31,7 @@ Rebuild the four mechanisms on one property: **the conversation is an immutable,
    - Any client attaches through `GET /api/nodes/:id/stream` and gets a snapshot, then deltas, then exactly one terminal event.
    - Slow readers coalesce; nothing is dropped. Polling is replaced.
 4. **Liveness by Postgres session advisory lock**, not heartbeats.
-   - Each instance holds `pg_advisory_lock(owner_key)` for its lifetime. A sweep only reclaims nodes whose owner's lock is acquirable, meaning the owner is dead.
+   - Each instance holds `pg_advisory_lock(owner_key)` for its lifetime, with server TCP keepalives set so a vanished host's lock is freed within about 30 s. A sweep only reclaims nodes whose owner's lock is acquirable, meaning the owner is dead.
    - An instance never sweeps itself.
    - Flushes and final writes are fenced by `attempt`, and they may reclaim an `interrupted` node that was not retried.
    - On SIGTERM, each task cancels and marks only its own `(id, attempt)`.
@@ -52,7 +52,8 @@ Rejected:
 ## Consequences
 
 - At most one compaction call per `BLOCK_TOKENS` of conversation per path, usually off the critical path. Sibling branches share summaries and prompt-cache prefixes.
-- No periodic heartbeat writes. A Postgres outage of any length doesn't kill a single instance's streams.
+- No periodic heartbeat writes. A Postgres outage of any length doesn't kill a single instance's streams, and final writes retry for as long as the process lives.
+- `BLOCK_TOKENS`, `PATH_MSG_MAX_TOKENS` and the canonical tokenizer are compile-time constants, because stored checkpoint fields depend on them.
 - The advisory-lock connection must bypass transaction-mode PgBouncer (`DATABASE_URL_DIRECT`).
 - The daily cap can't be overshot. Every billed call has a settled `llm_usage` row.
 - Merges are snapshots. Continuing a merged branch marks its edge `stale`, and the UI offers to update the summary. A canvas has a merge budget; when it is full, merges return 422.
