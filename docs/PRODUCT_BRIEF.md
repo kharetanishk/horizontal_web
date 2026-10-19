@@ -27,12 +27,13 @@ _Auto-generated from recorded factory state. Do not edit inside this block._
 **Verified & accepted work:** none yet
 
 **Open risks:**
-- F-architecture-L3-1 (high): Context-budget fit guarantee (NFR-7) is arithmetically inconsistent and has no runtime backstop
-- F-architecture-L3-2 (medium): Per-canvas merge budget makes merge permanently unavailable on long canvases
-- F-architecture-L3-3 (medium): NFR-6 (±5% counter accuracy) is silently weakened for non-local tokenizers
-- F-architecture-L3-4 (medium): POST /api/events has no stated ownership check or rate limit
-- F-architecture-L3-5 (medium): Delete behaviour of `llm_usage.node_id` is unspecified; a cascade would wipe the cost ledger and reset the daily cap
-- F-architecture-L3-6 (medium): Deploy-on-every-push with a 20 s drain routinely interrupts in-flight answers
+- F-architecture-L3-1 (high): Final write retries forever on permanent DB errors (e.g. NUL byte), pinning the node and an in-flight slot
+- F-architecture-L3-2 (medium): A merged branch's own summary is injected into prompts on that same branch
+- F-architecture-L3-3 (medium): Canvas deletions are resurrected by a backup restore (no tombstones)
+- F-architecture-L3-4 (medium): Unbounded argon2 queue lets anyone degrade login for every user
+- F-architecture-L3-5 (medium): Compaction reservation at the summary model's window maximum can exceed the daily cap, disabling compaction
+- F-architecture-L3-6 (medium): SSE has no keepalive; proxies will cut long silent phases
+- F-architecture-L3-7 (medium): Canvas load recomputes the mode-tokenizer count of every node from scratch after a restart
 
 **Next:**
 - `factory run` to continue the architecture phase

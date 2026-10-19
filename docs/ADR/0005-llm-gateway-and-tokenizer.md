@@ -9,7 +9,7 @@ ADR 0002 left the Rust LLM client open (genai or async-openai). NFR-13 needs a m
 
 ## Decision
 
-The `llm` module is the only code that calls providers. It exposes `stream`, `complete` and `count_tokens`, and is built on `genai` for multi-provider streaming (assumption: it reports usage for the chosen providers; a one-day spike verifies this). Fallback is `async-openai` against OpenAI-compatible APIs. Models per mode (`MODEL_MAIN`, `MODEL_DOUBT`, `MODEL_SUMMARY`) come from env. `count_tokens` is always local, and canvas load never calls a provider to count. **Phase 1 constraint (2026-10-19, with ADR 0006):** main and doubt models must have a local tokenizer, either OpenAI models via `tiktoken-rs` or open-weight models via their `tokenizer.json` (`tokenizers` crate). This keeps NFR-6 (±5%) and the exact daily cap true without approximations. A model without a local tokenizer may serve only `MODEL_SUMMARY`.
+The `llm` module is the only code that calls providers. It exposes `stream`, `complete` and `count_tokens`, and is built on `genai` for multi-provider streaming (assumption: it reports usage for the chosen providers; a one-day spike verifies this). Fallback is `async-openai` against OpenAI-compatible APIs. Models per mode (`MODEL_MAIN`, `MODEL_DOUBT`, `MODEL_SUMMARY`) come from env. `count_tokens` is always local, and canvas load never calls a provider to count. **Phase 1 constraint (2026-10-19, with ADR 0006):** main, doubt and summary models must have a local tokenizer, either OpenAI models via `tiktoken-rs` or open-weight models via their `tokenizer.json` (`tokenizers` crate). This keeps NFR-6 (±5%) true and every metering reservation computable. Models without a local tokenizer (e.g. Anthropic) wait for a later phase.
 
 ## Consequences
 
