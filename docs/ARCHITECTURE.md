@@ -84,6 +84,9 @@ Postgres 16 (managed)     LLM provider(s) over HTTPS
    DB errors are classified ([F-L3-1](reports/reviews/architecture-L3.md)):
    - **Transient** errors are retried: connection loss, pool or statement timeout, and SQLSTATE classes `08`, `57P0x`, `53300`, `40001` and `40P01`.
    - **Any other error is permanent.** The task writes `status = error`, `error_code = 'persist_failed'` and the partial text (best effort), settles usage in a separate statement, and publishes `error`.
+   - DB errors are logged only as SQLSTATE plus constraint name, never through `Display` of the sqlx error, because Postgres `DETAIL` can carry row content.
+   - The app's DB role sets `log_error_verbosity = terse` and `log_min_error_statement = panic`, so the server log omits it too (host support is an open question).
+   - The NFR-9 test includes a forced constraint violation ([F-L3-5](reports/reviews/architecture-L3.md)).
    - U+0000, which Postgres `text` rejects, is replaced with U+FFFD in model deltas and in all user input at the boundary, so the obvious permanent failure can't happen (property-tested).
    Transient errors are retried with capped exponential backoff (max 10 s apart) **for as long as the process lives**. The finished text stays in memory, and attached clients see a non-terminal `finalizing` status. `done` is published only after commit. A terminal `error` is never published while the row is still `streaming`. Only process exit can end the retries. The row is then still `streaming` under a dead `owner_key`, so the next sweep marks it `interrupted` with the last flushed text (`final_write_abandoned` logged at shutdown). On a stream error, the task writes the partial text, `status = error` and `error_code` (also retried), settles usage, and publishes `error`.
 9. The buffer is capped at `MAX_NODE_CHARS` (100,000 code points). If the cap is hit, or the provider stops with `finish_reason = length` (the `max_tokens` limit), the task saves the text with `status = complete` and `error_code = 'truncated'`. The UI shows "Answer hit the length limit" and a **Continue** quick action, which sends a reply asking the model to continue ([F-L3-7](reports/reviews/architecture-L3.md)).
@@ -129,7 +132,7 @@ No broad `WHERE status = 'streaming'` update exists anywhere.
 **Tokenizer ratios.** For each configured model, a fixture test over English, code, CJK and emoji corpora measures both directions against `o200k_base`:
 - `r_up` = max(mode / canonical);
 - `r_down` = max(canonical / mode).
-They are compile-time constants per model. Startup refuses unknown models and checks every inequality below ([F-L3-8](reports/reviews/architecture-L3.md)).
+They live in `tokenizers.toml`, a config file written by `api measure-ratio <model>`. Switching to a measured model is therefore config-only (NFR-13); a new model is measured once first. Startup refuses unmeasured models and checks every inequality below ([F-L3-8](reports/reviews/architecture-L3.md)).
 
 **Path message cap.** Every path message enters prompts middle-truncated to at most `PATH_MSG_MAX_TOKENS` (2,500 canonical). Startup checks `PATH_MSG_MAX_TOKENS ≥ REPLY_RESERVE_TOKENS × r_down`, so a full-length AI reply is never truncated. It bounds 8,000-char user messages in dense scripts.
 
@@ -148,7 +151,7 @@ These values depend only on the node's ancestors. A node only gets children once
 **Precompute, off the critical path.** When a node completes as a checkpoint and its path holds ≥ 50% of the path budget in raw tokens, the scheduler computes the missing `S(·)` in the background:
 - in order, through a per-user round-robin queue served by 2 workers, so one heavy user can't starve the others;
 - metered as a `compaction` reservation, and skipped if the user is over the cap.
-At boot, the scheduler re-enqueues `is_checkpoint AND compaction_summary IS NULL` checkpoints on canvases active in the last 24 h (one indexed query), so a deploy doesn't push the chain onto the next send's critical path. An on-demand chain inside a send is bounded to 2 sequential summary calls; beyond that it uses drop-oldest for that send and leaves the rest to the queue ([F-L3-9](reports/reviews/architecture-L3.md)). Compaction reservations count toward the daily cap but not the user's in-flight limit, so system work never 429s a user's send ([F-L3-6](reports/reviews/architecture-L3.md)). An on-demand compaction inside a send takes its own `compaction` reservation in its own admission. If the cap refuses it, the send falls back to drop-oldest.
+Once the process has been up 5 min, the scheduler re-enqueues `is_checkpoint AND compaction_summary IS NULL` checkpoints on canvases active in the last 24 h (one indexed query). A crash loop never reaches that point, so it can't burn caps, so a deploy doesn't push the chain onto the next send's critical path. An on-demand chain inside a send is bounded to 2 sequential summary calls; beyond that it uses drop-oldest for that send and leaves the rest to the queue ([F-L3-9](reports/reviews/architecture-L3.md)). Compaction reservations count toward the daily cap but not the user's in-flight limit, so system work never 429s a user's send ([F-L3-6](reports/reviews/architecture-L3.md)). An on-demand compaction inside a send takes its own `compaction` reservation in its own admission. If the cap refuses it, the send falls back to drop-oldest.
 By the time a send needs `S(k)`, it already exists. The scheduler is in-process and not durable. A summary lost to a restart is computed on demand by the next send, with a 30 s timeout and a `compaction_on_critical_path` log. If that fails, the send drops the oldest messages instead.
 
 **Assembly** `assemble(node, mode, new_message?) -> (messages, tokens, estimated)`:
@@ -164,6 +167,11 @@ By the time a send needs `S(k)`, it already exists. The scheduler is in-process 
    | New message | 3,000 |
    | Merged summaries (per path) | `MERGE_BUDGET_TOKENS` (2,000) |
    | Compaction summary `S` | 1,000 |
+
+   Slots measured in another tokenizer are sized so they always fit; startup checks both inequalities ([F-L3-3](reports/reviews/architecture-L3.md)):
+   - `COMPACTION_SUMMARY_MAX_TOKENS` (the summary model's output limit) is 700, and `700 × r(summary → mode) + wrapper tags ≤ 1,000`.
+   - Merged summaries are budgeted in canonical tokens (`merge_ctok` per edge, framing included) against `MERGE_BUDGET_CANON` (1,550), and `1,550 × r_up + tags ≤ 2,000`.
+   So S and merged summaries are never truncated, and a message never sits in the wrong-tokenizer slot.
    | **Path tail** | **14,000 − 8,300 = 5,700** |
 
    `S` lives in the fixed part, never in the tail. An oversized piece is middle-truncated with a `[… N tokens omitted …]` marker.
@@ -180,7 +188,7 @@ By the time a send needs `S(k)`, it already exists. The scheduler is in-process 
    A merged summary is included only if its branch edge has `source_id` on the path and `target_id` **not** on the path. Continuing inside a merged branch therefore never sees that branch's own summary ([F-L3-2](reports/reviews/architecture-L3.md)). Summaries of other merged branches from an origin on the path *are* included, branch prompts too: FR-14 says every path through the origin gets them. Sibling *messages* never are;
    - the anchor, then the new message wrapped by the quick-action template (AC-7.1, AC-8.x).
    Roles strictly alternate user/assistant. Adjacent same-role items are concatenated into one turn with a fixed `\n\n---\n\n` separator; this covers a summary before a user message and a branch from a `user_message` (U1 →branch→ U2, AC-5.1). The merge is deterministic, so it stays byte-stable ([F-L3-10](reports/reviews/architecture-L3.md)). Two consecutive sends on the same path share every byte up to the new message (AC-10.4). Sibling branches share every byte up to their fork. Explicit Anthropic `cache_control` breakpoints go after the summary block and at the end of the tail, if the gateway exposes them (spike); OpenAI-style providers cache stable prefixes automatically. The provider's `cached_tokens` is recorded.
-6. **Anchor** (branches): for `text`, the highlight plus its surrounding sentence, or for long highlights the text marked "the part being asked about"; for `code`, the selected lines marked plus the rest of the block; nothing extra for `none`.
+6. **Anchor** (branches). Nested branches carry several anchors. Only the **innermost** branch's anchor fills the anchor slot, just before the new message. Each outer branch edge on the path is inlined at its branch point as a compact `<anchor>` holding only the highlighted text, capped at 300 tokens. That marker is part of the branch's first node for budgeting: it counts in that node's `ctok` and within `PATH_MSG_MAX_TOKENS`, so the block bounds still hold (AC-9.1, AC-10.2; [F-L3-4](reports/reviews/architecture-L3.md)). The innermost anchor: for `text`, the highlight plus its surrounding sentence, or for long highlights the text marked "the part being asked about"; for `code`, the selected lines marked plus the rest of the block; nothing extra for `none`.
 7. **Merged summaries are never dropped.** The merged-summary tokens on any root-to-leaf path are capped at `MERGE_BUDGET_TOKENS` (2,000).
    - The merge confirm checks it under the canvas row lock with two CTEs: the merge tokens on the origin's ancestors, plus the largest running sum down the origin's subtree.
    - Only paths through the origin can change, so merges elsewhere on the canvas don't count against it ([F-L3-2](reports/reviews/architecture-L3.md)).
@@ -203,7 +211,7 @@ NFR-1 (path fetch + assembly < 200 ms p95 at 200-deep paths) is expected to hold
 ```sql
 SELECT 1 FROM users WHERE id = $u FOR NO KEY UPDATE;     -- serializes metering, doesn't block FK inserts
 SELECT coalesce(sum(CASE WHEN settled_at IS NULL THEN reserved_tokens
-                         ELSE prompt_tokens + completion_tokens END), 0) AS spent_today,
+                         ELSE coalesce(prompt_tokens, 0) + coalesce(completion_tokens, 0) END), 0) AS spent_today,
        count(*) FILTER (WHERE settled_at IS NULL AND kind <> 'compaction') AS in_flight
 FROM llm_usage WHERE user_id = $u AND (created_at >= date_trunc('day', now()) OR settled_at IS NULL);
 -- reject (429, rollback) if spent_today + $reserve > DAILY_TOKEN_CAP or in_flight >= 3 (user-initiated kinds only)
@@ -232,8 +240,8 @@ Postgres 16. All ids are UUID v7. Text enums use `CHECK` constraints. The brief'
 | `sessions` | `token_hash bytea` (SHA-256 of the cookie token), `user_id`, `expires_at`, `created_at` | PK `token_hash`; FK `user_id → users ON DELETE CASCADE`; index `user_id` |
 | `canvases` | `id`, `user_id`, `title`, `root_node_id` (nullable), `created_at`, `updated_at` | FK `user_id → users ON DELETE CASCADE`; index `(user_id, updated_at DESC)`. The first message sets `root_node_id` with `WHERE root_node_id IS NULL`; no row updated → 409. Merges lock the canvas row to check the per-path merge budget |
 | `nodes` | `id`, `canvas_id`, `type` (`user_message`/`ai_message`), `content text`, `status` (`streaming`/`complete`/`error`), `error_code`, `attempt int`, `owner_key bigint` (instance streaming it), `model`, `prompt_tokens`, `completion_tokens`, `cached_tokens`, `ctok int`, `tok jsonb` (per-tokenizer counts), `block_acc int`, `is_checkpoint bool`, `compaction_summary`, `compaction_tokens int`, `position_x`, `position_y`, `created_at`, `updated_at` | FK `canvas_id → canvases ON DELETE CASCADE`; `UNIQUE(canvas_id, id)`; index `canvas_id`; partial index `(owner_key) WHERE status = 'streaming'` (sweeper); `CHECK (char_length(content) <= 100000)`; `CHECK (compaction_summary IS NULL OR is_checkpoint)` |
-| `edges` | `id`, `canvas_id`, `source_id`, `target_id`, `type` (`reply`/`branch`), `anchor jsonb`, `doubt_type` (`simpler`/`example`/`why`/`deeper`/`wrong`/`free`), `merge_summary`, `merge_tokens int`, `merged_at`, `merged_node_count int`, `collapsed bool`, `created_at` | Composite FKs `(canvas_id, source_id)` and `(canvas_id, target_id) → nodes(canvas_id, id) ON DELETE CASCADE`; `UNIQUE(target_id)` (tree, path-walk index); partial `UNIQUE(source_id) WHERE type = 'reply'`; index `source_id`; index `canvas_id`; `CHECK ((type = 'branch') = (anchor IS NOT NULL AND doubt_type IS NOT NULL))`; `CHECK (type = 'branch' OR (merge_summary IS NULL AND NOT collapsed))` |
-| `llm_usage` | `id bigserial`, `user_id` (plain UUID, **no FK**: usage counts hold no content and are kept as pseudonymous cost records after account deletion, as the privacy notice states; with invite-only accounts, deleting an account can't be used to reset the cap), `node_id` (nullable, **no FK**: the ledger outlives canvas deletion, so deleting a canvas never refunds the daily cap or erases cost records; [F-L3-5](reports/reviews/architecture-L3.md)), `kind` (`answer`/`compaction`/`merge_proposal`), `model`, `owner_key`, `reserved_tokens`, `prompt_tokens`, `completion_tokens`, `cached_tokens`, `estimated bool`, `created_at`, `settled_at` | Index `(user_id, created_at)`; partial index `(user_id) WHERE settled_at IS NULL`; `CHECK (settled_at IS NULL OR prompt_tokens IS NOT NULL)` |
+| `edges` | `id`, `canvas_id`, `source_id`, `target_id`, `type` (`reply`/`branch`), `anchor jsonb`, `doubt_type` (`simpler`/`example`/`why`/`deeper`/`wrong`/`free`), `merge_summary`, `merge_ctok int`, `merged_at`, `merged_rev bigint`, `last_proposal`, `collapsed bool`, `created_at` | Composite FKs `(canvas_id, source_id)` and `(canvas_id, target_id) → nodes(canvas_id, id) ON DELETE CASCADE`; `UNIQUE(target_id)` (tree, path-walk index); partial `UNIQUE(source_id) WHERE type = 'reply'`; index `source_id`; index `canvas_id`; `CHECK ((type = 'branch') = (anchor IS NOT NULL AND doubt_type IS NOT NULL))`; `CHECK (type = 'branch' OR (merge_summary IS NULL AND NOT collapsed))` |
+| `llm_usage` | `id bigserial`, `user_id` (plain UUID, **no FK**: usage counts hold no content and are kept as pseudonymous cost records after account deletion, as the privacy notice states; with invite-only accounts, deleting an account can't be used to reset the cap), `node_id` (nullable, **no FK**: the ledger outlives canvas deletion, so deleting a canvas never refunds the daily cap or erases cost records; [F-L3-5](reports/reviews/architecture-L3.md)), `kind` (`answer`/`compaction`/`merge_proposal`), `model`, `owner_key`, `reserved_tokens`, `prompt_tokens`, `completion_tokens`, `cached_tokens`, `estimated bool`, `created_at`, `settled_at` | Index `(user_id, created_at)`; partial index `(user_id) WHERE settled_at IS NULL`; `CHECK (settled_at IS NULL OR (prompt_tokens IS NOT NULL AND completion_tokens IS NOT NULL))`. Settlement writes 0, never NULL, for an absent count, and the cap SQL also uses `coalesce` ([F-L3-6](reports/reviews/architecture-L3.md)) |
 | `tombstones` | `kind` (`user_deleted`/`canvas_deleted`/`password_reset`), `id`, `at` | No FK. Restore runbook input (see Deployment) |
 | `invites` | `token_hash bytea`, `user_id`, `expires_at`, `used_at` | PK `token_hash`; FK `user_id → users ON DELETE CASCADE` |
 | `events` | `id bigserial`, `user_id`, `canvas_id`, `kind` (`branch_created`/`merge_confirmed`/`merge_updated`/`back_to_main`/`collapse`), `payload jsonb`, `created_at` | FKs `ON DELETE CASCADE`; index `(user_id, created_at)`. Payload is a typed Rust enum per `kind`; never message text except proposed vs. confirmed merge summaries |
@@ -242,7 +250,7 @@ Choices behind the model:
 
 - **Branch state lives on the branch edge** (`merge_summary`, `collapsed`). An origin can have several branches, each merged or collapsed separately. The origin in "stored against the origin node" (AC-13.2) is the edge's `source_id`.
 - **Content is immutable once a node is `complete`.** Only `streaming`/`error` AI nodes change content. An `error` node has no children, because sends need a complete parent. So checkpoint fields, summaries and anchors are never invalidated.
-- **Merges are snapshots** ([F-L3-7](reports/reviews/architecture-L3.md)). A merged branch can still be continued. Downstream prompts keep the confirmed summary. The edge stores `merged_node_count`, the subtree size counted while the merge holds the canvas row lock. Sends take the same lock, so no send can interleave, and since subtrees only grow, `stale = subtree size > merged_node_count` is exact ([F-L3-3](reports/reviews/architecture-L3.md)). The UI shows it as and the UI offers "N new messages since merge · update summary". Re-merging replaces the summary and writes `merge_updated`, not a second `merge_confirmed`, so the metrics don't double-count. The same summary again is a no-op. Merge proposal and merge confirm return 422 `branch_streaming` while any node in the branch subtree is streaming.
+- **Merges are snapshots** ([F-L3-7](reports/reviews/architecture-L3.md)). A merged branch can still be continued. Downstream prompts keep the confirmed summary. The edge stores `merged_rev = count(subtree nodes) + sum(subtree attempts)`, computed while the merge holds the canvas row lock. Sends **and retries** take the same lock (both go through admission). Both terms only grow, so `stale = current rev > merged_rev` is exact. It also catches a retried answer inside the branch ([F-L3-2](reports/reviews/architecture-L3.md)). The UI offers "branch changed since merge · update summary". Re-merging replaces the summary and writes `merge_updated`, not a second `merge_confirmed`, so the metrics don't double-count. The same summary again is a no-op. Merge proposal and merge confirm return 422 `branch_streaming` while any node in the branch subtree is streaming.
 - **Anchor JSON** (brief shape, `kind` discriminated; the Rust enum is the source for TS via ts-rs): `{"kind":"none"}` · `{"kind":"text","start":412,"end":540,"text":"…"}` · `{"kind":"code","start":900,"end":1340,"start_line":5,"end_line":9,"text":"…"}`.
   - `start`/`end` are UTF-16 code-unit offsets into the raw markdown `content`, matching JS string indexing. For a `code` anchor they cover the whole code block, and `text` is the selected lines.
   - The server never slices Rust strings by those offsets. It converts with `encode_utf16()`, checks `start <= end <= len`, and compares `String::from_utf16(&u[start..end])` with `text` (AC-6.1). A `code` slice must also start with a fence line, and lines `start_line..=end_line` must equal `text`. Any failure → 422 `invalid_anchor`.
@@ -255,7 +263,7 @@ Choices behind the model:
   - Safety net: any reservation unsettled after 15 min (startup checks this is > `TASK_DEADLINE_SECS`) is settled at its reserved amount by any instance's sweeper. `in_flight` can therefore never leak.
 
 **Migrations**:
-- SQLx migrations are embedded with `sqlx::migrate!` and run at startup under SQLx's advisory lock.
+- SQLx migrations are embedded with `sqlx::migrate!` and run at startup under SQLx's advisory lock, over `DATABASE_URL_DIRECT`. A session lock needs a non-pooled connection ([F-L3-13](reports/reviews/architecture-L3.md)).
 - `set_ignore_missing(true)`, so a rolled-back binary boots on a newer schema.
 - Forward-only, using expand → deploy → contract.
 - `.sqlx/` offline data is committed.
@@ -276,7 +284,7 @@ Codes:
 - 403 `forbidden_origin`
 - 404 `not_found`
 - 409 `conflict`
-- 422 `invalid_anchor`, `parent_not_complete`, `branch_streaming`, `merge_budget_exhausted`
+- 422 `message_too_long`, `invalid_anchor`, `parent_not_complete`, `branch_streaming`, `merge_budget_exhausted`
 - 429 `rate_limited`, `daily_cap_reached` (both with `Retry-After`)
 - 502 `llm_unavailable`
 - 503 `unavailable`
@@ -296,10 +304,10 @@ Codes:
 | `DELETE /api/canvases/:id` | – | 204; cascades; writes a `canvas` tombstone (table + log line) |
 | `POST /api/canvases/:id/messages` | `{user_node_id, ai_node_id, parent_id?, edge: "reply" \| "branch", anchor?, doubt_type?, content}` | `text/event-stream`: `created` {nodes, edges} → `snapshot` → `delta`* → `done` {node, context_tokens} or `error` {error, node} |
 | `GET /api/nodes/:id/stream` | – | `text/event-stream`: `snapshot` {node} → `delta`* → `done`/`error`. For a settled node: `snapshot` then the terminal event. Used on reload, second tab and reconnect |
-| `POST /api/nodes/:id/retry` | – | Rate limit, then one transaction: admission + compare-and-set `UPDATE nodes SET status = 'streaming', content = '', attempt = attempt + 1, owner_key = $me WHERE id = $1 AND status = 'error' AND <owned> RETURNING attempt`. No row → 409 and nothing written, including the reservation and the partial text (AC-18.1). Then the same stream as a send |
+| `POST /api/nodes/:id/retry` | – | Rate limit, then one transaction: admission (user lock, then canvas lock, as in a send) + compare-and-set `UPDATE nodes SET status = 'streaming', content = '', attempt = attempt + 1, owner_key = $me WHERE id = $1 AND status = 'error' AND <owned> RETURNING attempt`. No row → 409 and nothing written, including the reservation and the partial text (AC-18.1). Then the same stream as a send |
 | `PUT /api/canvases/:id/positions` | `[{id, x, y}]` (≤ 2,000) | 204. One `UPDATE … FROM unnest(…)` scoped to the canvas after the ownership check. Duplicate ids → 400; row count ≠ ids → 404, rolled back |
 | `POST /api/edges/:id/merge-proposal` | – | `{summary}` (≤ 200 chars, not stored). Admitted and metered like a send. The input is the anchor, then the branch's main line (from the branch's first node along `reply` edges to its end), with nested merged summaries inline. Messages are middle-truncated to `PATH_MSG_MAX_TOKENS`, and the oldest are dropped to fit `MERGE_PROPOSAL_INPUT_TOKENS` (4,000). The reservation is 4,000 + 100 output. A property test keeps the input within the cap ([F-L3-8](reports/reviews/architecture-L3.md)). 422 `branch_streaming`; 502 if the LLM fails (the UI lets the user type it) |
-| `PUT /api/edges/:id/merge` | `{summary, proposed?}` (1–200 chars each) | 200 edge (`collapsed = true`, AC-13.2) plus updated `context_tokens` for affected nodes. Same summary → no-op 200. 404 unless a `branch`; 422 `branch_streaming` / `merge_budget_exhausted` |
+| `PUT /api/edges/:id/merge` | `{summary}` (1–200 chars) | 200 edge (`collapsed = true`, AC-13.2) plus updated `context_tokens` for affected nodes. The proposal is taken from `edges.last_proposal`, which the merge-proposal endpoint stores server-side, so the "merge edits" metric never trusts client text ([F-L3-12](reports/reviews/architecture-L3.md)). Same summary → no-op 200. 404 unless a `branch`; 422 `branch_streaming` / `merge_budget_exhausted` |
 | `PATCH /api/edges/:id` | `{collapsed}` | 200 edge. 404 unless a `branch` |
 | `POST /api/events` | `{canvas_id, kind, payload}`, UI-only kinds (`back_to_main`, `collapse`) | 204. Ownership is checked by joining `canvases.user_id = $me`; otherwise 404, and it is in the NFR-8 per-endpoint tests. Rate limit 60/min per user; payload ≤ 4 KB and typed per kind (422 otherwise). Server-side kinds are never accepted from the client ([F-L3-4](reports/reviews/architecture-L3.md)) |
 | `GET /api/livez` | – | 200 while the process runs |
@@ -309,12 +317,12 @@ Rules:
 
 - **Length unit**: every length limit counts Unicode code points (`chars().count()`, `char_length`).
 - **Message validation**:
-  - `content` is 1–8,000 chars.
+  - `content` is 1–8,000 chars **and** ≤ 3,000 tokens in the mode tokenizer, the new-message slot. Over that → 422 `message_too_long` with the count, never silent truncation; the composer shows a live count ([F-L3-9](reports/reviews/architecture-L3.md)).
   - `parent_id` may be absent only for the first question, enforced through `canvases.root_node_id`.
   - The parent must be `complete` (AC-6.2).
   - A `reply` parent has at most one reply child (partial unique → 409).
   - `branch` needs an `anchor` and a `doubt_type`; `text`/`code` anchors only on `ai_message` parents.
-- **Idempotency**: retried writes carry client-generated ids. A repeat insert hits the PK → 409, and the client reloads.
+- **Idempotency**: retried writes carry client-generated ids. A repeat insert hits the PK → 409, and the client reloads. The server rejects ids that aren't UUID v7, so every id carries 74 random bits. A 409 on another tenant's id could only confirm an id the caller already holds; that is an accepted risk ([F-L3-11](reports/reviews/architecture-L3.md)).
 - **Rate limits** (in-process token buckets, checked before any DB write):
   - 20 LLM calls/min per user;
   - auth endpoints 10/min per client IP;
@@ -338,10 +346,11 @@ Rules:
 **Invite-only accounts; no self-signup in phase 1.** Phase 1 is a moderated test with a handful of learners. Self-signup, even behind an allowlist, lets anyone who knows an allowlisted address claim it first, and proving email ownership needs an email provider.
 1. The operator runs `api invite <email>`. It creates the `users` row with no password, and prints a single-use link carrying a 32-byte token. Only the token's SHA-256 is stored, in `invites(token_hash, user_id, expires_at, used_at)`, with a 7-day expiry.
 2. The operator sends the link to the learner out of band.
-3. `POST /api/auth/accept-invite` sets the password and marks the token used, in one transaction.
+3. `POST /api/auth/accept-invite` claims the token atomically with `UPDATE invites SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING user_id`, so two concurrent accepts can't both win. In the same transaction it sets the password and deletes **all** of that user's other invites ([F-L3-1](reports/reviews/architecture-L3.md)).
 There is no public signup endpoint, so there is nothing to enumerate.
 - Login verifies against a fixed dummy hash for unknown emails and for users who have no password yet.
-- `api reset-password <email>` issues a new invite link for an existing user. It clears the password hash and deletes that user's sessions.
+- `api reset-password <email>` deletes that user's existing invites and sessions, clears the password hash, writes a `password_reset` tombstone, then issues a new invite link. A leaked earlier link is dead at once.
+- `api invite` also deletes any earlier unused invites for that user.
 - Opening signup to the public needs an email provider and verification, which is a later phase ([ADR 0004](ADR/0004-password-auth-postgres-sessions.md)).
 
 Not in phase 1: self-signup, email password reset, magic links, OAuth. Single role; no sharing.
@@ -450,7 +459,7 @@ The monthly drill deletes a synthetic user and a synthetic canvas, and resets a 
 **Config (env)**:
 - Connections and keys: `DATABASE_URL`, `DATABASE_URL_DIRECT` (optional), provider API keys.
 - Models: `MODEL_MAIN`, `MODEL_DOUBT`, `MODEL_SUMMARY`.
-- Context budget: `CONTEXT_BUDGET_TOKENS=16000`, `REPLY_RESERVE_TOKENS=2000`, `COMPACTION_SUMMARY_MAX_TOKENS=1000`, `MERGE_BUDGET_TOKENS=2000`, `MERGE_PROPOSAL_INPUT_TOKENS=4000`. `BLOCK_TOKENS`, `PATH_MSG_MAX_TOKENS`, `FRAME_TOKENS` and the per-model `r_up`/`r_down` table are compile-time constants.
+- Context budget: `CONTEXT_BUDGET_TOKENS=16000`, `REPLY_RESERVE_TOKENS=2000`, `COMPACTION_SUMMARY_MAX_TOKENS=700`, `MERGE_BUDGET_TOKENS=2000`, `MERGE_BUDGET_CANON=1550`, `MERGE_PROPOSAL_INPUT_TOKENS=4000`, and `tokenizers.toml` (per-model `r_up`/`r_down`). `BLOCK_TOKENS`, `PATH_MSG_MAX_TOKENS` and `FRAME_TOKENS` are compile-time constants.
 - Auth: `TRUSTED_IP_HEADER`, `APP_ORIGIN` (used in invite links and the Origin check).
 - Limits and streaming: `DAILY_TOKEN_CAP`, `STREAM_FLUSH_MS=1000`, `TASK_DEADLINE_SECS=240`, `DRAIN_SECS=270`, `MAX_NODE_CHARS=100000`.
 The budget inequality (Context builder step 3) is checked at startup. Changing the model for a mode is a config change only (NFR-13).
@@ -466,3 +475,4 @@ The budget inequality (Context builder step 3) is checked at startup. Changing t
 | DOM selection → markdown source offsets | Renderer source positions (assumption) | Spike with code blocks, lists, inline code |
 | Static export with `?id=` route and CSP hashes | Works (assumption) | First web build |
 | Hosting provider, PITR and log-drain retention | Container PaaS + managed Postgres; drain ≥ 8 days | Owner decision before release |
+| Host deploy strategy overlaps old and new instances (rolling or blue-green), and the app DB role may set `log_error_verbosity` | Yes (assumption); the zero-cut-deploy claim depends on overlap ([F-L3-8](reports/reviews/architecture-L3.md)) | Check at host choice; without overlap, deploys cut answers older than `DRAIN_SECS`, which is accepted |
