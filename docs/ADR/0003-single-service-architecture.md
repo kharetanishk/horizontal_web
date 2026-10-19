@@ -13,4 +13,4 @@ One Axum binary serves the JSON API, the SSE streams and the static Next.js expo
 
 ## Consequences
 
-One image, one process, same-origin cookies, no CORS. Rate limits are in-process, so the app runs as one instance until they move to Postgres (a brief overlap during deploys is accepted). The sweep of interrupted streams is heartbeat-based and safe with several instances. Phase 2/3 (composer, embeddings) add a worker and a queue; the module boundaries (`llm`, `context`) are kept so a worker binary can reuse them.
+One image, one process, same-origin cookies, no CORS. Rate limits are in-process, so the app runs as one instance until they move to Postgres (a brief overlap during deploys is accepted). Interrupted streams are detected through Postgres advisory locks, which is safe with several instances ([ADR 0006](0006-context-and-stream-engine.md)). Phase 2/3 (composer, embeddings) add a worker and a queue; the module boundaries (`llm`, `context`) are kept so a worker binary can reuse them.
