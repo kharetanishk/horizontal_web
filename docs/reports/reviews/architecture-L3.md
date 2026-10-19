@@ -1,70 +1,70 @@
 # Level 3 review: architecture
 
-- Generated: 2026-10-19T14:07:55+05:30
+- Generated: 2026-10-19T14:11:52+05:30
 - Verdict: **fail**
 
 | ID | Severity | Title | Location |
 |---|---|---|---|
-| F-architecture-L3-1 | high | Final write retries forever on permanent DB errors (e.g. NUL byte), pinning the node and an in-flight slot | docs/ARCHITECTURE.md:82 (send step 8), Failure handling 'Postgres outage' row |
-| F-architecture-L3-2 | medium | A merged branch's own summary is injected into prompts on that same branch | docs/ARCHITECTURE.md:165-166 (Layout), :226 'Merges are snapshots', Testing strategy 'no sibling content' |
-| F-architecture-L3-3 | medium | Canvas deletions are resurrected by a backup restore (no tombstones) | docs/ARCHITECTURE.md Security 'Deletion tombstones'; Deployment 'Restore runbook' steps 3-4 |
-| F-architecture-L3-4 | medium | Unbounded argon2 queue lets anyone degrade login for every user | docs/ARCHITECTURE.md API Rules 'Rate limits' (argon2 semaphore of 2); Auth 'Equal-work responses' |
-| F-architecture-L3-5 | medium | Compaction reservation at the summary model's window maximum can exceed the daily cap, disabling compaction | docs/ARCHITECTURE.md:119 (tokenizer constraint), Metering bullet 2 |
-| F-architecture-L3-6 | medium | SSE has no keepalive; proxies will cut long silent phases | docs/ARCHITECTURE.md Stream engine 'Attach'; send step 8 'finalizing'; Failure handling timeouts |
-| F-architecture-L3-7 | medium | Canvas load recomputes the mode-tokenizer count of every node from scratch after a restart | docs/ARCHITECTURE.md:176-177 (Token counter), :143 (path CTE) |
-| F-architecture-L3-8 | low | 'Full reply never truncated' and 'cap holds exactly' claims rest on the wrong ratio | docs/ARCHITECTURE.md:121 (Path message cap), :158-159, Metering bullet 2 |
-| F-architecture-L3-9 | low | Sweeper charges the full 16k reservation for crashed answers | docs/ARCHITECTURE.md:101 (sweeper step 2), Metering bullet 5 |
+| F-architecture-L3-1 | high | Reservations for deleted nodes may never settle, so in-flight slots leak and the user gets locked out | docs/ARCHITECTURE.md:251-252 ("A stream task whose node is deleted matches no row and stops"), :106 (sweeper settles an answer from assemble(parent) + flushed content), Metering in_flight query |
+| F-architecture-L3-2 | medium | Attaching to a stream from the in-memory registry has no stated ownership check | docs/ARCHITECTURE.md:93-98 (Attach), API row GET /api/nodes/:id/stream |
+| F-architecture-L3-3 | medium | A merge racing a send into the branch can miss a message and never flag it stale | docs/ARCHITECTURE.md Data model 'Merges are snapshots' (stale = exists(subtree node created after merged_at)); merge confirm 422 branch_streaming |
+| F-architecture-L3-4 | medium | The PITR restore path doesn't re-apply deletions made after the restore point | docs/ARCHITECTURE.md Restore runbook steps 1-4 |
+| F-architecture-L3-5 | medium | On Fly, a 290 s drain is shorter than the 300 s whole-answer timeout, so deploys can still cut answers | docs/ARCHITECTURE.md:117 (DRAIN_SECS = whole-answer timeout, 'never cuts a normal answer'); Deployment health checks (DRAIN_SECS=290 on Fly) |
+| F-architecture-L3-6 | low | The answer reservation may not cover max_tokens output | docs/ARCHITECTURE.md Metering ('an answer reserves the context budget plus a 5% margin (16,800)'); send step 6 (max_tokens = REPLY_RESERVE_TOKENS) |
+| F-architecture-L3-7 | low | Progressive delays per email and the global auth bucket let others deny logins | docs/ARCHITECTURE.md API Rules > Rate limits |
+| F-architecture-L3-8 | low | Password length has no upper bound | docs/ARCHITECTURE.md API signup row (password ≥ 12 chars); DELETE /api/me {password} |
+| F-architecture-L3-9 | low | Canvas GET writes lazily-filled token counts back to the database | docs/ARCHITECTURE.md Token counter ('written back lazily for any missing id') |
 
-## F-architecture-L3-1: Final write retries forever on permanent DB errors (e.g. NUL byte), pinning the node and an in-flight slot
+## F-architecture-L3-1: Reservations for deleted nodes may never settle, so in-flight slots leak and the user gets locked out
 
-Step 8 says the final write retries with backoff 'for as long as the process lives', and only process exit ends it. It does not separate transient errors from permanent ones. Postgres `text` rejects U+0000 (`invalid byte sequence for encoding "UTF8": 0x00`), and a model can be prompted to emit it. Each flush fails and is skipped, then the final write fails deterministically forever. Settlement happens in the same transaction, so the reservation stays unsettled, the node stays `streaming`/`finalizing`, and the call counts against the user's in-flight limit of 3. Three such answers lock the user out of sending until the next deploy. Each one also holds the SIGTERM drain for the full DRAIN_SECS. User `content` sent as JSON `\u0000` hits the same failure on insert.
+llm_usage.node_id deliberately has no FK, so a reservation outlives canvas deletion. When the canvas is deleted mid-stream, the fenced flush matches no row and the task 'stops'. Nothing says it still settles its reservation. The owner is alive, so the sweeper never touches that row. If the instance later dies, the sweeper settles an answer from `assemble(parent)` and the last flushed content, and both are gone. The doc gives no fallback for that case, so the sweep transaction can error on every 30 s pass. The in_flight count includes every row with `settled_at IS NULL` regardless of day. Scenario: a user deletes 3 canvases while answers are streaming, and from then on every send, retry or merge proposal returns 429 (`in_flight >= 3`).
 
-**Recommendation:** Strip or replace U+0000 in model deltas and in user input at the boundary, and add a property test for it. Classify DB errors: retry only connection, timeout or serialization errors (SQLSTATE classes 08, 57P, 40001). On any other error, write `status=error, error_code='persist_failed'` and settle the usage in a separate statement, then publish `error`.
+**Recommendation:** State that a fenced write that matches no row still settles its own reservation with the local estimate. For a missing node, the sweeper should fall back to `reserved_tokens` (or the locally counted completion only). As a backstop, exclude reservations older than the whole-answer timeout plus margin from `in_flight`. Add a test: delete the canvas mid-stream, then assert the reservation is settled and in_flight = 0.
 
-## F-architecture-L3-2: A merged branch's own summary is injected into prompts on that same branch
+## F-architecture-L3-2: Attaching to a stream from the in-memory registry has no stated ownership check
 
-The rule includes every merged summary whose origin lies on the path. Merged branches can still be continued (line 226). Take branch B→X→Y, merged, then continued at Y. B is on Y's path, so the summary of X..Y gets appended to B's content, ahead of X and Y, which are also in the prompt verbatim. The model sees a summary of the conversation before that conversation happens, the tokens are duplicated, and the merge allotment is spent on redundant text. Summaries of sibling branches from B also land in Y's prompt. That conflicts with the 'no sibling content in a prompt' property test and AC-10.2.
+Attach sends a `snapshot` with all text so far straight from `Mutex<HashMap<NodeId, Arc<Stream>>>`. The `Stream` struct holds only attempt, text and watch: no user_id or canvas_id. The ownership rule says 'every query joins through canvases.user_id', but a registry hit is not a query. An implementation that checks the registry first would stream another user's answer to anyone holding the node UUID. UUIDs are not secret: they are client-generated and appear in logs (node_id is an allowed log field). This breaks NFR-8.
 
-**Recommendation:** Include a merged summary only if its branch edge is not on the current path: `edge.target_id NOT IN path`. State whether sibling-branch summaries belong in branch prompts, and align the AC-10.1/10.2 property test with that rule.
+**Recommendation:** Either do the owned-node DB lookup (404 otherwise) before any registry or poller access, or store `user_id` in `Stream` and compare it. Name GET /api/nodes/:id/stream explicitly in the NFR-8 per-endpoint tests, with a live registry entry belonging to another user.
 
-## F-architecture-L3-3: Canvas deletions are resurrected by a backup restore (no tombstones)
+## F-architecture-L3-3: A merge racing a send into the branch can miss a message and never flag it stale
 
-Only account deletions are tombstoned, in `account_deletions` and the log drain. `DELETE /api/canvases/:id` (AC-2.3) leaves no record. Restoring from a backup older than the deletion brings back every canvas a user deleted, with its message content. The runbook has no step to re-apply those deletions. This is a data-protection failure for user-initiated deletion.
+Sends don't take the canvas row lock. Only merges do. Under READ COMMITTED, a send transaction that started before the merge transaction but has not committed is invisible to the merge's `branch_streaming` check. Its nodes get `created_at = now()` (transaction start), which is earlier than `merged_at`. After both commit, the branch holds a new Q/A pair that the summary doesn't cover, `stale` is false forever, and the UI never offers 'update summary'. Downstream prompts silently lack that content.
 
-**Recommendation:** Write `canvas_id` tombstones the same way: a `canvas_deletions` table plus an `event=canvas_deleted canvas_id=…` log line. Extend runbook steps 3-4 to re-apply them, and add a canvas deletion to the monthly drill.
+**Recommendation:** Have sends whose parent is inside a branch subtree take `SELECT … FROM canvases WHERE id=$c FOR SHARE` in the admission transaction (merges already take FOR UPDATE). Or compute stale from a monotonic sequence assigned at commit instead of created_at vs merged_at. Add a race test.
 
-## F-architecture-L3-4: Unbounded argon2 queue lets anyone degrade login for every user
+## F-architecture-L3-4: The PITR restore path doesn't re-apply deletions made after the restore point
 
-Signup runs argon2id on every request, even when signup is closed or the email isn't allowlisted. Login does the same for unknown emails. The only limits are 10/min per client IP and a semaphore of 2. Nothing bounds the waiters on that semaphore. A distributed client (many IPs × 10/min) can exceed 2-worker argon2 throughput, and queued requests grow without limit. Legitimate logins then time out, and memory grows with parked requests.
+Step 1 says that with PITR 'deletions up to that point are already applied'. Steps 3-4 (collect and re-apply tombstones) are written only for the backup path ('Otherwise…'). Restoring to a point before the incident rolls back every account or canvas deletion made between that point and the restore, which breaks FR-20 / AC-20.1. The same gap exists in step 2 for tombstones whose live `deletions` rows were lost in the incident window.
 
-**Recommendation:** Add a global auth token bucket and a bounded wait on the semaphore: `try_acquire` with a short timeout → 503 `unavailable` with Retry-After. When signup is closed (empty allowlist and SIGNUP_OPEN=false), return the 403 without hashing; there is nothing to enumerate.
+**Recommendation:** Make tombstone collection and re-application (steps 3-4) unconditional. Use as the cutoff the recovery target time, or the backup time, whichever is older. Extend the monthly drill to the PITR path too.
 
-## F-architecture-L3-5: Compaction reservation at the summary model's window maximum can exceed the daily cap, disabling compaction
+## F-architecture-L3-5: On Fly, a 290 s drain is shorter than the 300 s whole-answer timeout, so deploys can still cut answers
 
-For a summary model without a local tokenizer (e.g. Anthropic, explicitly allowed for MODEL_SUMMARY), the reservation is its 'window maximum', around 200k tokens. That is likely larger than any sensible DAILY_TOKEN_CAP. If so, every compaction admission is refused, so every long path silently uses the drop-oldest fallback. Line 138 confirms a refused compaction falls back to drop-oldest. FR-11 summaries never happen, and the precompute queue keeps re-trying. The same section also says the reservation is 'summary input plus output', which contradicts the window maximum.
+The claim that a deploy never cuts a normal answer holds only if drain ≥ answer timeout plus the final-write time. On Fly, DRAIN_SECS is 290 against a 300 s answer timeout, so an answer that started within 10 s before SIGTERM and runs long is cancelled. The final write and settlement must also fit inside the kill timeout. That margin is unspecified, and under a slow DB the cancelled task's own error write can be SIGKILLed too.
 
-**Recommendation:** The input to compaction is already bounded (COMPACTION_SUMMARY_MAX_TOKENS + BLOCK_TOKENS + one PATH_MSG_MAX_TOKENS, canonical). Reserve that bound × a measured worst-case ratio for the summary model, plus max output. Add a startup check that this reservation is well below DAILY_TOKEN_CAP.
+**Recommendation:** Tie the values together and check them at startup: whole-answer timeout + final-write margin ≤ DRAIN_SECS < platform kill timeout. For example, on Fly use a 270 s answer timeout with DRAIN_SECS=285. Or downgrade the claim to 'answers shorter than DRAIN_SECS'.
 
-## F-architecture-L3-6: SSE has no keepalive; proxies will cut long silent phases
+## F-architecture-L3-6: The answer reservation may not cover max_tokens output
 
-Several phases send no bytes for a long time: first-token wait up to 30 s, an on-demand compaction chain up to 2×30 s before the stream starts, a 30 s inter-chunk gap, and a `finalizing` state during a Postgres outage that can last minutes. The doc defines no SSE comment or heartbeat. PaaS edge proxies and load balancers close idle HTTP responses after roughly 60–100 s, depending on the host. The client then has to reconnect and re-attach, and during deploy overlap that falls back to the 1 s DB poller.
+The reservation is `CONTEXT_BUDGET_TOKENS × 1.05` = 16,800. If the 16,000 budget is input-only and the 2,000 reply is extra, a call can bill up to about 18,800 tokens, and the cap is exceeded by about 2k per in-flight call. The excerpt available doesn't show whether the budget includes the reply reserve. The compaction and merge reservations count output explicitly, but the answer reservation doesn't.
 
-**Recommendation:** Send an SSE comment (`:\n\n`) every 15 s on every attach. Add an integration test that holds the fake provider silent for 90 s behind the platform proxy.
+**Recommendation:** Write the answer reservation as (input_budget × 1.05) + REPLY_RESERVE_TOKENS, or state that CONTEXT_BUDGET_TOKENS already includes the reply reserve. Add the reservation ≥ max billable check to the startup assertions.
 
-## F-architecture-L3-7: Canvas load recomputes the mode-tokenizer count of every node from scratch after a restart
+## F-architecture-L3-7: Progressive delays per email and the global auth bucket let others deny logins
 
-Persisted `ctok` uses the canonical tokenizer, but the counter is computed in the mode tokenizer. Those counts are cached only in an in-process LRU keyed by (node_id, tokenizer). After any restart or eviction, opening a 1,000-node canvas re-tokenizes every node's full content in two tokenizers; middle truncation needs a full tokenization first. Nodes can be up to 100k chars. The doc also doesn't say whether `assemble` per node issues the step-1 recursive CTE. If it does, that is 1,000 CTEs per load. NFR-3 (< 2 s) is at risk, and the doc calls the load 'cheap' without a bound.
+Failed-login delays are applied 'per email' as well as per (email, IP). Anyone who knows a user's email can keep that user's own logins delayed. The global 120/min auth bucket can be exhausted from about 12 IPs at 10/min each, which turns every user's login and signup into 503. The doc accepts the distributed case but not the targeted per-email one.
 
-**Recommendation:** State that canvas load derives every path in memory from one `nodes`+`edges` fetch, with no per-node CTE. Persist the per-node mode-tokenizer count next to `ctok`, keyed by tokenizer id, and invalidate it on model change. Benchmark NFR-3 with a cold cache and maximum-size nodes.
+**Recommendation:** Apply the per-email delay only to IPs with no recent successful login for that account, or cap the per-email delay low (≤ 2 s). Keep the per-(email, IP) delay. Exempt requests that carry a valid session from the global bucket.
 
-## F-architecture-L3-8: 'Full reply never truncated' and 'cap holds exactly' claims rest on the wrong ratio
+## F-architecture-L3-8: Password length has no upper bound
 
-MODE_TOKEN_RATIO is defined as the worst ratio of mode tokens to canonical tokens, which is the right bound for converting canonical → mode. Line 121 uses it the other way: it claims PATH_MSG_MAX_TOKENS (2,500 canonical) ≥ REPLY_RESERVE (2,000 mode) × ratio. Converting mode → canonical needs the inverse worst-case ratio, which is never measured. Even taken as written, the startup check allows r up to 1.26 while 2,000 × 1.26 = 2,520 > 2,500. Separately, provider-reported prompt tokens can exceed local counts by chat framing (NFR-6 allows ±5%). A settled answer can then exceed its 16,000 reservation, so 'the cap holds exactly' is overstated.
+Only a minimum length is set, so the 1 MB body limit is the effective maximum. Argon2 work grows with input length, and that work sits behind a semaphore of 2. Large passwords make each slot more expensive and lengthen the 2 s queue for legitimate users.
 
-**Recommendation:** Measure and check both directions of the ratio at startup, and make PATH_MSG_MAX_TOKENS ≥ REPLY_RESERVE × the worst canonical/mode ratio. Reserve the budget plus a framing margin, or reword 'exactly' as 'up to framing error'.
+**Recommendation:** Cap passwords at 128-1,024 code points in the serde type (400 beyond).
 
-## F-architecture-L3-9: Sweeper charges the full 16k reservation for crashed answers
+## F-architecture-L3-9: Canvas GET writes lazily-filled token counts back to the database
 
-The sweeper settles a dead owner's reservations at the reserved amount: 16,000 per answer, even if a few tokens were generated. A crash loop, such as OOM on a large canvas or a bad deploy, therefore burns users' daily caps on system faults. The users get 429 `daily_cap_reached` for failures that weren't theirs.
+GET /api/canvases/:id can issue writes for up to 1,000 nodes when a tokenizer id is missing. That happens after any model config change, and the doc doesn't say whether the write is in the request path or bounded. Concurrent loads race on the same rows, and a read-only failure such as the DB in recovery would fail the GET. That works against NFR-3, which is measured on a cold process.
 
-**Recommendation:** Settle swept answer reservations from the data that exists: a local count of the parent path's prompt plus the last flushed content, marked `estimated=true`. Keep the full reservation only for kinds that have no flushed state.
+**Recommendation:** Return the computed counts, and write them back in a single bounded background `UPDATE … FROM unnest` that ignores failures. Or fill the counts once at startup when the model config changes.
