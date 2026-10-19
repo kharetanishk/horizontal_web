@@ -1,63 +1,70 @@
 # Level 3 review: architecture
 
-- Generated: 2026-10-19T14:24:41+05:30
+- Generated: 2026-10-19T14:27:27+05:30
 - Verdict: **fail**
 
 | ID | Severity | Title | Location |
 |---|---|---|---|
-| F-architecture-L3-1 | medium | The new-message slot does not count the quick-action template, so a valid message can push the prompt over budget | docs/ARCHITECTURE.md:320 (validation), :161-167 (slot table), :182 (backstop), :189 (template wrapping) |
-| F-architecture-L3-2 | medium | Truncating an oversized anchor can cut out the very text being asked about (breaks AC-7.1/AC-6.1) | docs/ARCHITECTURE.md:166 (anchor 1,500), :177 (middle-truncation), :191 (code anchor = selected lines + rest of block) |
-| F-architecture-L3-3 | medium | The token counter is defined two ways that contradict each other (exact full count vs. sum of stored per-message counts) | docs/ARCHITECTURE.md:182, :198-200 |
-| F-architecture-L3-4 | medium | DELETE /api/me lets anyone holding a stolen session test passwords and run argon2 with no stated rate limit | docs/ARCHITECTURE.md:298, :328 |
-| F-architecture-L3-5 | low | The merge stale check (merged_rev) misses changes that don't add nodes or attempts | docs/ARCHITECTURE.md:253 (merged_rev), :80 (reclaim rule) |
-| F-architecture-L3-6 | low | The polling attach doesn't define what happens when a retry resets content and increments attempt | docs/ARCHITECTURE.md:103, :307 |
-| F-architecture-L3-7 | low | Each branch's anchor moves to the end of every later send, so the history differs from what was actually sent and prefix caching stops at the branch point | docs/ARCHITECTURE.md:189-191 |
-| F-architecture-L3-8 | low | Invite token in the link URL can reach proxy/access logs and the log drain | docs/ARCHITECTURE.md:347 |
+| F-architecture-L3-1 | high | Advisory-lock liveness depends on a direct connection, but DATABASE_URL_DIRECT is optional | docs/ARCHITECTURE.md:106 (owner lock); Deployment > Config (`DATABASE_URL_DIRECT` (optional)); Migrations bullet (F-L3-13) |
+| F-architecture-L3-2 | medium | The 15-minute reservation safety net assumes tasks end by TASK_DEADLINE_SECS, but the final write retries without limit | Data model > 'Every reservation settles exactly once' (safety net > TASK_DEADLINE_SECS); Failure handling row 'Postgres outage of any length'; ARCHITECTURE.md:80 reclaim fence |
+| F-architecture-L3-3 | medium | Device-cookie signing key is missing from config | API > Rate limits (signed HttpOnly `device` cookie); Deployment > Config (env) |
+| F-architecture-L3-4 | medium | NFR-11 'a completed node is never lost' can't hold with daily backups only | Failure handling > 'Data loss' row; Deployment > Host ('PITR preferred') |
+| F-architecture-L3-5 | medium | Canvas load recomputes the full prompt assembly for every node | ARCHITECTURE.md:203 ('context_tokens(X) = assemble(X, mode, None).tokens … does not use the prefix-sum trick'); API `GET /api/canvases/:id` returns context_tokens per node |
+| F-architecture-L3-6 | low | The merge-proposal spec contradicts itself on whether the proposal is stored | API table: `POST /api/edges/:id/merge-proposal` ('{summary} (≤ 200 chars, not stored)') vs `PUT /api/edges/:id/merge` ('edges.last_proposal, which the merge-proposal endpoint stores server-side') |
+| F-architecture-L3-7 | low | 'interrupted' is used as a node state but is not in the status enum | Data model `nodes.status` (`streaming`/`complete`/`error`); ARCHITECTURE.md:80, 115, 124, 387–390 |
+| F-architecture-L3-8 | low | The CSP has no style-src, so inline styles fall under default-src 'self' | Security and data protection > Headers (`default-src 'self'; script-src 'self' <hashes>`) |
+| F-architecture-L3-9 | low | TRUSTED_IP_HEADER rule may rule out two of the three candidate hosts | API > Rate limits (production refuses X-Forwarded-For/Forwarded); Deployment > Host (Fly.io, Render or Railway) |
 
-## F-architecture-L3-1: The new-message slot does not count the quick-action template, so a valid message can push the prompt over budget
+## F-architecture-L3-1: Advisory-lock liveness depends on a direct connection, but DATABASE_URL_DIRECT is optional
 
-Validation accepts content up to 3,000 tokens in the mode tokenizer. Step 3 says every fixed slot includes its own wrapper tags and framing, and step 5 wraps the new message in the quick-action template (AC-8.x). A 3,000-token message plus a template such as the 'I think this is wrong' re-check instructions is larger than the 3,000-token slot. The runtime backstop then truncates or drops older tail messages, so NFR-7 still holds, but this breaks the stated property 'the runtime backstop never fires when r_up is at its limit'. It also silently removes context that the fit guarantee says is always present.
+Several things rely on a session-level `pg_advisory_lock(owner_key)` held on a dedicated non-pooled connection: the sweeper, reclaim and reservation settlement, and the migration lock. Config marks `DATABASE_URL_DIRECT` optional. If it is left unset and `DATABASE_URL` points at a transaction-mode pooler (PgBouncer, Supavisor, Neon pooled), one of two things happens. The lock lands on a backend that is reused or released between statements. Or `pg_locks` shows no lock for a live owner. Either way, another instance's sweep (line 110) sees a live `owner_key` as dead. It marks in-flight answers `interrupted` and settles their reservations while they are still streaming. Concurrent migrations also lose mutual exclusion. Nothing in the doc detects this misconfiguration.
 
-**Recommendation:** Validate content against 3,000 minus (the largest template overhead + chat framing), computed per mode at startup. Alternatively, give the templates their own fixed slot in the table. Add a proptest case: a 3,000-token message with every doubt_type, with the backstop asserted not to fire.
+**Recommendation:** In production, make `DATABASE_URL_DIRECT` required, or refuse to start unless a startup probe proves the lock connection is session-pinned: take the lock, then check across two separate statements that `pg_locks` shows it for the same `pg_backend_pid()`. Add a pooled-URL misconfiguration case to the fault-injection suite.
 
-## F-architecture-L3-2: Truncating an oversized anchor can cut out the very text being asked about (breaks AC-7.1/AC-6.1)
+## F-architecture-L3-2: The 15-minute reservation safety net assumes tasks end by TASK_DEADLINE_SECS, but the final write retries without limit
 
-The anchor slot is 1,500 mode tokens. An answer can be up to max_tokens = 2,000 tokens, multiplied by r for the mode tokenizer. So a `text` highlight of most of an answer, or a `code` anchor (selected lines plus the whole block), can be larger than 1,500 tokens. The only overflow rule is generic middle-truncation with an omission marker. For a code anchor, the selected lines 5–9 can sit in the cut middle, so the prompt no longer contains 'the selected lines marked as the part asked about' (AC-7.1). For a long text highlight, the highlight itself is cut.
+The startup check (15 min > `TASK_DEADLINE_SECS`) is the only reason the safety net can't settle a live task's reservation. But the final write 'retries until it lands' for an outage 'of any length', so a task can outlive both the deadline and the 15 minutes. After a long outage the sweeper settles that reservation at its reserved amount. The late task then reclaims the node through the fence at line 80 and its `Reservation` guard settles again. The doc never says settlement is `UPDATE … WHERE settled_at IS NULL`. Without that condition the usage is counted twice. With it, the real counts are silently dropped in favour of the reserved estimate, so NFR-12 cost records are wrong without any signal.
 
-**Recommendation:** Define truncation that keeps the selection: trim the surrounding context (sentence or rest of the code block) first, and middle-truncate the selection only when the selection alone is over the slot. Then mark it explicitly. Add a test where a code block over 1,500 tokens has the selection in the middle.
+**Recommendation:** State that settlement is `UPDATE llm_usage SET … WHERE id = $1 AND settled_at IS NULL`. Let a late owner overwrite an `estimated` safety-net settlement with its real counts (for example `WHERE settled_at IS NULL OR estimated`). Either cap the final-write retry at the deadline, or drop the claim that the 15-minute check is sufficient. Add a test: pause Postgres for more than 15 min after stream end, then assert one settlement with the real counts.
 
-## F-architecture-L3-3: The token counter is defined two ways that contradict each other (exact full count vs. sum of stored per-message counts)
+## F-architecture-L3-3: Device-cookie signing key is missing from config
 
-Line 198 says context_tokens(X) = assemble(X).tokens, 'the exact same function'. Line 182 says the backstop counts the assembled prompt once in the mode tokenizer. Lines 199-200 say canvas load never re-tokenizes and only sums stored per-message `tok` values. These numbers differ for three reasons: (a) BPE tokenizes a concatenation differently from its parts summed; (b) the `\n\n---\n\n` same-role merge removes per-message framing and adds separators; (c) `<merged_branch>` blocks and outer `<anchor>` markers are appended to tail content. Either the AC-12.1 equality property fails, or the budget check uses a sum-of-parts number that can undercount the real prompt.
+Returning users skip the per-email login delay by presenting a signed `device` cookie. The Config list has no signing secret (e.g. `DEVICE_COOKIE_KEY`). If the key is generated at boot, every deploy and every overlapping instance invalidates the other instances' cookies, so returning users lose the protection the pattern exists for. If the key is a compiled-in constant, the cookie can be forged and the per-email throttle bypassed.
 
-**Recommendation:** State one definition. Recommended: assemble().tokens = sum of stored part counts + fixed per-part framing constants, used by both the counter and admission. The backstop does a full re-count and logs the delta. Bound sum-vs-full drift in a proptest (e.g. ≤ 1 token per boundary), and include that margin in the budget inequality.
+**Recommendation:** Add a required env secret (at least 32 bytes) for device-cookie signing, shared by all instances. Production refuses to start without it. Document how to rotate it, for example by accepting the old key for a while.
 
-## F-architecture-L3-4: DELETE /api/me lets anyone holding a stolen session test passwords and run argon2 with no stated rate limit
+## F-architecture-L3-4: NFR-11 'a completed node is never lost' can't hold with daily backups only
 
-DELETE /api/me takes {password} and verifies it with argon2. The rate-limit rules cover 'auth endpoints 10/min per client IP' and give progressive delays only for failed logins. Re-auth on DELETE /api/me is in neither list, and nothing says it shares the argon2 semaphore or the global 120/min auth bucket. With a stolen session cookie, an attacker gets an unthrottled oracle for the user's password, which may be reused elsewhere. They also get an argon2 CPU path outside the bounded auth budget.
+The doc concedes that without PITR a database loss loses up to 24 h, and it marks the host as an assumption. NFR-11 says a completed node is never lost after the stream ends. With daily backups only, every node completed since the last backup is lost when the database is lost. The doc lists only the drain/outage exception to NFR-11, not this one.
 
-**Recommendation:** State explicitly that the DELETE /api/me password check goes through the same argon2 semaphore, the global auth bucket, the per-IP auth bucket and the per-email failure delays as login. Add it to the rate-limit tests.
+**Recommendation:** Either make PITR (or WAL archiving) a hard requirement for host selection, or record a second explicit NFR-11 exception with an RPO of 24 h and get the owner to sign off on it.
 
-## F-architecture-L3-5: The merge stale check (merged_rev) misses changes that don't add nodes or attempts
+## F-architecture-L3-5: Canvas load recomputes the full prompt assembly for every node
 
-merged_rev = count(subtree nodes) + sum(attempts). Two changes to the merge input don't move it: (1) re-merging or newly merging a nested branch changes the nested summaries that are inlined into the outer branch's proposal input; (2) a node swept as `interrupted` is reclaimed by its original owner (status error→streaming→complete, same attempt). An `error` node does not block a merge (only `streaming` does), and the reclaim fenced write does not take the canvas lock. So the outer summary can describe partial or outdated content and is never flagged as stale.
+`GET /api/canvases/:id` returns `context_tokens` for every node, and each one is computed by a full `assemble` along that node's path. The cost is O(nodes × path length) assembly work per load, and that includes compaction and summary resolution. A 1,000-node canvas with deep paths can blow the NFR-3 target (render in under 2 s), and the NFR-1 benchmark covers only one path build, not N of them.
 
-**Recommendation:** Add a per-subtree monotonic counter that is bumped under the canvas lock by any nested merge, by a reclaim, and by a status transition of a subtree node. Alternatively, store a hash of the proposal input and compare it. Block merges while any subtree node is `error`/`interrupted`, or make the reclaim take the canvas lock.
+**Recommendation:** Extend the NFR-3 benchmark to time server-side `context_tokens` for every node on the seeded 1,000-node canvas with 200-deep paths. If it misses the target, compute counts lazily (only for visible or selected nodes), or cache them per node keyed by `(path checkpoint, merged_rev set)`.
 
-## F-architecture-L3-6: The polling attach doesn't define what happens when a retry resets content and increments attempt
+## F-architecture-L3-6: The merge-proposal spec contradicts itself on whether the proposal is stored
 
-The polling fallback (used during deploy overlap) sends deltas from the last offset it sent. A retry sets content = '' and attempt = attempt + 1 on the same node id. A poller that compares only length or offsets will slice past the end of the new, shorter content, or interleave two attempts' text. The registry path carries `attempt`, but the poller is not specified to.
+One row says the proposal is not stored; the next relies on `edges.last_proposal` being written by that endpoint. The 'merge edits' metric (F-L3-12) only works if the proposal is stored. An implementer following the first row breaks the metric. It also means a mutating, LLM-metered endpoint writes to `edges` without the doc saying whether it takes the canvas lock. That matters because `merged_rev` and merge confirm rely on that lock.
 
-**Recommendation:** The poller must read `attempt` with `content`. When attempt changes, send a fresh `snapshot` (or a terminal event plus `reattach`) and reset the offset. Add an integration test: retry during a polling attach.
+**Recommendation:** Change the merge-proposal row to say it stores `last_proposal`. Specify whether that write takes the canvas lock, and what happens to `last_proposal` when a proposal fails (502) or the user types the summary by hand.
 
-## F-architecture-L3-7: Each branch's anchor moves to the end of every later send, so the history differs from what was actually sent and prefix caching stops at the branch point
+## F-architecture-L3-7: 'interrupted' is used as a node state but is not in the status enum
 
-The innermost anchor and the quick-action template are placed just before the new message on every send. On the second send in a branch, U1 appears in the tail as its stored content, not as it was originally sent (anchor + template). The anchor moves after U1/A1. So the model sees a different conversation than it answered, and consecutive sends share a cache prefix only up to the fork, not up to the previous turn. This weakens the caching goal behind AC-10.4.
+The fence at line 80 shows `interrupted` is meant as `error_code` with `status = 'error'`. The failure table and drain steps say 'marks those nodes `interrupted`' as if it were a status. `error_code` has no CHECK or enum listing its allowed values. A typo or a status-based implementation would quietly break the reclaim fence, which matches on `error_code = 'interrupted'`.
 
-**Recommendation:** Persist the exact wrapped user turn (template + anchor) as sent, or render the anchor once at the branch's first message, and keep it there verbatim in later prompts. Then add a test that send N+1's prefix equals send N's full prompt plus its reply.
+**Recommendation:** List the `error_code` values (`interrupted`, `llm_unavailable`, …) with a CHECK constraint, and write every reference as `status = 'error', error_code = 'interrupted'`.
 
-## F-architecture-L3-8: Invite token in the link URL can reach proxy/access logs and the log drain
+## F-architecture-L3-8: The CSP has no style-src, so inline styles fall under default-src 'self'
 
-The 32-byte invite token is carried in a URL. If it is in the path or query, the PaaS edge proxy and access logs record it. Those logs ship to the log drain, which is kept ≥ 8 days, longer than the 7-day invite expiry. Anyone with log access can claim an unused invite. The NFR-9 allowlist covers app logs, not platform proxy logs.
+Only script hashes are planned. With no `style-src`, inline `<style>` elements and markup `style=` attributes are blocked. Sources of those include Next static-export inlined CSS or font CSS, syntax-highlighter output rendered as HTML, and any library-injected styles. Styling could break in production only, since the dev server doesn't send this CSP.
 
-**Recommendation:** Put the token in the URL fragment (#token=…), which browsers never send to servers. The page reads it and POSTs it to /api/auth/accept-invite. Document this choice.
+**Recommendation:** Settle `style-src` in the same first-web-build spike: hashes, or `'unsafe-inline'` for styles recorded as an accepted risk. Add a Playwright check that runs against the production CSP headers.
+
+## F-architecture-L3-9: TRUSTED_IP_HEADER rule may rule out two of the three candidate hosts
+
+Production refuses to start unless `TRUSTED_IP_HEADER` names a single-value header that the platform overwrites. Fly has one (`Fly-Client-IP`). Whether Render or Railway provide one is not established (**assumption**). If they don't, the app can't start on those hosts. The doc also forbids the standard safe pattern of taking the right-most XFF entry appended by a known proxy hop.
+
+**Recommendation:** Add this to the host-choice open questions. Alternatively, support a 'right-most XFF entry at trusted hop N' mode as a vetted option, covered by the same spoofing test.
