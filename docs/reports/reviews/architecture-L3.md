@@ -1,84 +1,77 @@
 # Level 3 review: architecture
 
-- Generated: 2026-10-19T13:58:39+05:30
+- Generated: 2026-10-19T14:03:35+05:30
 - Verdict: **fail**
 
 | ID | Severity | Title | Location |
 |---|---|---|---|
-| F-architecture-L3-1 | high | Sweeper never settles orphaned compaction/merge-proposal reservations, so users can end up permanently rate-limited | docs/ARCHITECTURE.md:99-100 (sweeper step 1), :169 (Metering), :106-110 (drain) |
-| F-architecture-L3-2 | high | If the final write fails, the node stays 'streaming' forever, the finished answer is lost, and the user cannot retry | docs/ARCHITECTURE.md:82 (send step 8), :101, :308-311 (Failure handling) |
-| F-architecture-L3-3 | high | Advisory-lock liveness depends on TCP detection; losing a host keeps a dead instance's lock for hours | docs/ARCHITECTURE.md:96-100, :339 (test only covers SIGKILL) |
-| F-architecture-L3-4 | medium | A sweep during a lock-connection blip shows a terminal error that a later reclaim contradicts; Retry then throws away a valid answer | docs/ARCHITECTURE.md:78 (reclaim rule), :93 (attach fallback), :102 |
-| F-architecture-L3-5 | medium | The 'cap holds exactly' and NFR-7 claims are false when token counts are approximate | docs/ARCHITECTURE.md Metering (:152-170) and Context builder step 3 / Token counter (approximation path) |
-| F-architecture-L3-6 | medium | Background compaction and merge proposals use the user's 3 in-flight slots, so system work can 429 user sends | docs/ARCHITECTURE.md Context builder 'Precompute' and Metering ('in_flight >= 3' → 429, not queued) |
-| F-architecture-L3-7 | medium | The 'tail allotment > one block' guarantee is wrong: one block can exceed 5,700 tokens, so the latest message drops out of the verbatim tail | docs/ARCHITECTURE.md Context builder step 3 ('5,700 … more than BLOCK_TOKENS plus tokenizer slack') and step 4 |
-| F-architecture-L3-8 | medium | Unbounded SSE attach connections each poll Postgres every second | docs/ARCHITECTURE.md:93 (attach fallback), API GET /api/nodes/:id/stream |
-| F-architecture-L3-9 | low | Changing BLOCK_TOKENS or the canonical tokenizer silently invalidates the stored checkpoint fields | docs/ARCHITECTURE.md Context builder 'Checkpoints'; Config (env) BLOCK_TOKENS |
-| F-architecture-L3-10 | low | Branching from a user_message puts two user turns in a row, which the layout rule says cannot happen | docs/ARCHITECTURE.md Context builder step 5 ('Roles strictly alternate'); AC-5.1 |
-| F-architecture-L3-11 | low | The 'UTC day' depends on the session time zone, which is never set | docs/ARCHITECTURE.md Metering SQL (`date_trunc('day', now())`), 'The day is the UTC day' |
+| F-architecture-L3-1 | high | Context-budget fit guarantee (NFR-7) is arithmetically inconsistent and has no runtime backstop | docs/ARCHITECTURE.md, Context builder steps 3–4 (Fixed allotments, Fit guarantee, Cutoff) |
+| F-architecture-L3-2 | medium | Per-canvas merge budget makes merge permanently unavailable on long canvases | docs/ARCHITECTURE.md, Context builder step 7; PUT /api/edges/:id/merge |
+| F-architecture-L3-3 | medium | NFR-6 (±5% counter accuracy) is silently weakened for non-local tokenizers | docs/ARCHITECTURE.md, Token counter; Open questions (Providers/models per mode) |
+| F-architecture-L3-4 | medium | POST /api/events has no stated ownership check or rate limit | docs/ARCHITECTURE.md, API table (POST /api/events); NFR-8 |
+| F-architecture-L3-5 | medium | Delete behaviour of `llm_usage.node_id` is unspecified; a cascade would wipe the cost ledger and reset the daily cap | docs/ARCHITECTURE.md, Data model (llm_usage row); Metering |
+| F-architecture-L3-6 | medium | Deploy-on-every-push with a 20 s drain routinely interrupts in-flight answers | docs/ARCHITECTURE.md, Stream engine (Graceful shutdown); Deployment (Health checks, Build and ship) |
+| F-architecture-L3-7 | low | Hitting max_tokens (finish_reason=length) is not handled | docs/ARCHITECTURE.md, Send-message flow step 6; Context builder (Path message cap) |
+| F-architecture-L3-8 | low | Merge-proposal input over a subtree is unbounded and unspecified | docs/ARCHITECTURE.md, API (POST /api/edges/:id/merge-proposal) |
+| F-architecture-L3-9 | low | Compaction precompute is global, small and non-durable, so on-demand chains land on the critical path after deploys | docs/ARCHITECTURE.md, Context builder (Precompute, off the critical path) |
+| F-architecture-L3-10 | low | TRUSTED_IP_HEADER can be spoofed unless the doc pins which header and how it is parsed | docs/ARCHITECTURE.md, API Rules (Rate limits) |
 
-## F-architecture-L3-1: Sweeper never settles orphaned compaction/merge-proposal reservations, so users can end up permanently rate-limited
+## F-architecture-L3-1: Context-budget fit guarantee (NFR-7) is arithmetically inconsistent and has no runtime backstop
 
-The sweeper finds dead owners only through `SELECT DISTINCT owner_key FROM nodes WHERE status = 'streaming'`. A `compaction` or `merge_proposal` reservation (`node_id` nullable) has no streaming node, so its owner_key is never found. Background precompute is not durable, and drain step 3 only mentions stream tasks. So a crash, OOM or SIGTERM during a compaction or merge proposal leaves an `llm_usage` row with `settled_at IS NULL` forever. The metering query counts unsettled rows on every day (`OR settled_at IS NULL`). Each leaked row adds its `reserved_tokens` to `spent_today` every day and takes one of the 3 `in_flight` slots. After three leaks the user gets 429 on every send for good.
+Step 3 gives the compaction summary its own fixed 1,000-token allotment inside the 8,300, which leaves 5,700 for the tail. Step 4 then picks j so that `S(ckⱼ)` plus the messages after it fit the tail allotment, which counts S a second time. If S really counts against the tail, the claimed fit breaks: 5,174 + 1,000 = 6,174 > 5,700. With an estimated tokenizer, every count is also multiplied by TOKEN_SAFETY_FACTOR (1.15) on top of TOKENIZER_SLACK (1.15): 4,499 × 1.15 × 1.15 ≈ 5,950 > 5,700. With default config the startup check would then refuse to boot for any non-local-tokenizer provider, and that provider choice is still open. `ctok` counts only content. Per-message chat framing, the `\n\n---\n\n` separators and the `<conversation_summary>`/`<merged_branch>` wrappers are in no allotment. A block can legally hold hundreds of tiny messages (it is bounded by tokens, not by message count), so framing overhead is unbounded relative to the 5,700 tail. TOKENIZER_SLACK = 1.15 between o200k and another provider's tokenizer is unmeasured for CJK and emoji. Nothing says what `assemble` does if the inequality fails at runtime.
 
-**Recommendation:** Build the sweeper's key set as a UNION of streaming `nodes.owner_key` and `llm_usage.owner_key WHERE settled_at IS NULL`, using the existing partial index. Make drain cancel and settle compaction and merge-proposal tasks too. Add a fault-injection test: SIGKILL during a compaction, then check the reservation gets settled.
+**Recommendation:** Write a single explicit inequality that says whether S lives in the fixed part or the tail, includes both factors and a per-message framing bound (cap messages per block, or add k tokens per message to ctok), and recompute the defaults so it holds for both tokenizer classes. Then add a final hard check after assembly in the mode tokenizer: if it is over budget, drop the oldest tail messages or middle-truncate until it fits, and log `budget_enforced`. Property tests should use a block of many 1-token messages and a tokenizer pair at the slack limit.
 
-## F-architecture-L3-2: If the final write fails, the node stays 'streaming' forever, the finished answer is lost, and the user cannot retry
+## F-architecture-L3-2: Per-canvas merge budget makes merge permanently unavailable on long canvases
 
-After `FINAL_WRITE_RETRY_SECS` (120 s) the task logs `final_write_failed`, publishes `error` and drops the in-memory text. The row still has `status = 'streaming'` and this instance's owner_key, and an instance never sweeps its own key. Until the process restarts: retry is refused (its CAS needs `status = 'error'`), attach falls back to polling a row that never settles, and the reservation holds an in-flight slot. Only the last 1 s flush of text survives. The 'Postgres outage of any length' claim only holds if the stream outlasts the outage by less than 120 s. A 5-minute outage during a 20 s answer loses that answer, which contradicts NFR-11.
+The total `merge_tokens` per canvas is capped at 2,000. A 200-char summary is roughly 40–60 tokens in English and can reach 200+ in CJK or emoji. A canvas therefore allows about 30–40 merges, or about 10 with CJK, and after that every merge returns 422 `merge_budget_exhausted`, even for a branch whose downstream paths carry no other summaries. Only the summaries on one path ever enter a prompt, so the per-canvas cap is far more restrictive than the budget needs. This conflicts with FR-13/FR-14 and the ≥ 30% merge-use target on the 1,000-node canvases the NFRs assume.
 
-**Recommendation:** Keep the finished text and retry the final write without a deadline, or with a bounded queue, while the process lives; liveness is already DB-independent. Alternatively, when retries run out, hand the node to an in-process 'pending finalize' list that is retried on each sweeper tick. Never publish a terminal `error` while the row stays `streaming`. Add a test: pause Postgres for longer than 120 s past stream end, resume, check the node is `complete`.
+**Recommendation:** Enforce the cap per path. At confirm time, lock the canvas and check the maximum merged-summary tokens over all root-to-leaf paths through the origin, a CTE over the origin's ancestors plus the subtree. Alternatively, fold summaries whose origin lies before ckⱼ into the next S(ck), so they stop consuming the merge allotment.
 
-## F-architecture-L3-3: Advisory-lock liveness depends on TCP detection; losing a host keeps a dead instance's lock for hours
+## F-architecture-L3-3: NFR-6 (±5% counter accuracy) is silently weakened for non-local tokenizers
 
-`pg_advisory_lock` is released only when the Postgres backend sees its session end. On SIGKILL or OOM the kernel closes the socket, so the planned test passes. On VM loss, a network partition or a PaaS host migration, no FIN or RST arrives. The backend keeps the session, and the lock with it, until server TCP keepalives fire (Linux default about 2 h 11 min). During that window the nodes stay 'streaming' and cannot be retried, and their reservations block in-flight slots. The doc's claim of 'no clock-based guessing' moves the guess into kernel defaults the team does not control.
+For non-OpenAI providers the architecture uses a 'calibrated approximation… marked estimated'. NFR-6 and AC-12.2 require ±5% with no exception, and the provider choice is still open. If the owner picks Anthropic, NFR-6 can't pass and the gate test AC-12.2 fails, yet no requirement change or ADR records the trade-off. The same factor also feeds the metering cap ('holds within TOKEN_SAFETY_FACTOR'), so the 'exact' daily cap stops being exact.
 
-**Recommendation:** Set server-side `tcp_keepalives_idle/interval/count` (and `tcp_user_timeout` where available) on the lock session, e.g. `SET tcp_keepalives_idle = 10` after connecting. Check that the managed host honours this, and add it to the open-questions table. Add a test that drops packets to one instance with iptables, not just SIGKILL.
+**Recommendation:** Either make a local-tokenizer model a hard constraint for phase 1 (record it in an ADR and the privacy notice), or amend NFR-6/AC-12.2 through the requirements process before build, for example by using the provider's count-tokens endpoint off the critical path for calibration.
 
-## F-architecture-L3-4: A sweep during a lock-connection blip shows a terminal error that a later reclaim contradicts; Retry then throws away a valid answer
+## F-architecture-L3-4: POST /api/events has no stated ownership check or rate limit
 
-When instance A's lock connection drops, instance B sweeps A's nodes to `error/interrupted` and settles their reservations at the reserved amount. Clients attached on B through polling see the terminal `error` and close, and the UI offers Retry. A's task then reclaims the row with its fenced write and finishes it, but nothing tells B's clients, who already closed. If the user clicks Retry, the CAS bumps `attempt` and fences out A's nearly finished answer. The reclaim's final 'settle the reservation' also runs on a row the sweeper already settled. The doc doesn't say whether settlement is `WHERE settled_at IS NULL`, which would drop the real usage, or an overwrite.
+The endpoint takes a client-supplied `canvas_id` and returns 204. The doc lists ownership checks for canvas, node, edge and stream endpoints but not this one. Without the check, any user can insert `back_to_main`/`collapse` events against another user's canvas. That corrupts the success metrics (return-to-main) that gate phase 2. The FK-violation-versus-204 difference also leaks whether a canvas id exists. The endpoint is also outside the LLM and auth rate limits, so the `events` table can grow without bound per user.
 
-**Recommendation:** State that the final settlement overwrites the sweeper's estimated amount (`SET … estimated = false` unconditionally for that reservation id). Have polling attachers treat `interrupted` as non-terminal for a short grace period, or re-check before closing. Alternatively, have A drain and stop streaming when its lock connection drops, so a reclaim never happens.
+**Recommendation:** Join `canvases.user_id = $me` and return 404 otherwise (add it to the NFR-8 per-endpoint test list). Apply a per-user token bucket, for example 60/min, and cap the payload size.
 
-## F-architecture-L3-5: The 'cap holds exactly' and NFR-7 claims are false when token counts are approximate
+## F-architecture-L3-5: Delete behaviour of `llm_usage.node_id` is unspecified; a cascade would wipe the cost ledger and reset the daily cap
 
-For providers without a local tokenizer, the doc uses a 'calibrated approximation' and marks it `estimated`. The prompt is cut to 14,000 tokens under that estimate. If the provider's real tokenizer counts more, the request goes over the input budget (NFR-7: 'No request sends more input tokens than the configured budget'). Settlement then records the provider's larger usage, more than the 16,000 reserved, so the daily cap overshoots. The jittered automatic retry before the first token also runs 'inside the same reservation'; any provider that bills an aborted attempt doubles usage under one reservation.
+Only `user_id` has a declared FK. If an implementer adds the natural `node_id → nodes ON DELETE CASCADE`, deleting a canvas (AC-2.3 cascades nodes) deletes that day's settled usage rows. `spent_today` then drops and the user regains the full DAILY_TOKEN_CAP, which bypasses the cost control. NFR-12 cost records are lost too. Deleting a canvas mid-stream would also delete the open reservation the sweeper relies on.
 
-**Recommendation:** For estimated tokenizers, apply a safety margin (e.g. scale counts by the measured worst-case ratio from the AC-12.2 run) and validate it in the startup inequality. Change the wording from 'exactly' to 'exactly for local tokenizers, within margin otherwise', or give each provider attempt its own reservation.
+**Recommendation:** Declare `node_id` with no FK, or `ON DELETE SET NULL`, explicitly in the data model. Add an integration test: spend tokens, delete the canvas, and assert the cap still refuses.
 
-## F-architecture-L3-6: Background compaction and merge proposals use the user's 3 in-flight slots, so system work can 429 user sends
+## F-architecture-L3-6: Deploy-on-every-push with a 20 s drain routinely interrupts in-flight answers
 
-Precompute is 'metered as a compaction reservation' and is admitted by the same transaction that counts in-flight calls. A user with one answer streaming whose node triggers background compaction (up to 2 by the semaphore) reaches 3 in flight. Their next send then gets 429, from work they never started. An on-demand compaction inside a send needs a second admission while the send already holds a slot; when that is refused, the send drops to drop-oldest even though budget remains.
+Answers allow 2,000 output tokens and a 5-minute timeout, so long explanations commonly stream for more than 20 s. Every push to main deploys, and after DRAIN_SECS = 20 every remaining stream is cut to `interrupted`. The user has to Retry and pays for a second full reservation, even though the design already claims to be multi-instance safe during overlap. During a DB outage at deploy time, the final write can't land: a fully generated answer reverts to its last flushed text (`final_write_abandoned`). That contradicts NFR-11's 'completed node is never lost'.
 
-**Recommendation:** Leave system-initiated `compaction` reservations out of the `in_flight` count (keep them in `spent_today`), or give compaction a separate concurrency limit. Spell out how an on-demand compaction inside a send is admitted.
+**Recommendation:** Set DRAIN_SECS to at least the realistic maximum answer duration (e.g. 120 s) with a matching platform kill timeout (Fly allows up to 300 s), relying on overlap. Alternatively, batch deploys outside active sessions. Document the DB-outage-plus-SIGTERM loss as an explicit NFR-11 exception.
 
-## F-architecture-L3-7: The 'tail allotment > one block' guarantee is wrong: one block can exceed 5,700 tokens, so the latest message drops out of the verbatim tail
+## F-architecture-L3-7: Hitting max_tokens (finish_reason=length) is not handled
 
-`block_acc` resets only after reaching 3,000, so a block can hold up to 2,999 plus the last message's `ctok`. A stored user message can be 8,000 code points; the 3,000-token cap applies only at send time, not to stored path messages. CJK text or emoji can tokenize at 1 token per char or more, so one block can be well over 5,700 tokens. Suppose the parent X is the checkpoint that closes such a block. Then j = m−1 doesn't fit, so j = m, and the tail after ckₘ is empty. The answer being followed up appears only inside the summary, which breaks AC-11.1 ('the latest messages are verbatim'). The startup inequality checks only config constants, not this data-dependent bound.
+The LLM is called with `max_tokens = REPLY_RESERVE_TOKENS` (2,000), but no behaviour is defined when the provider stops on length. The answer ends mid-sentence with `status = complete` and no UI signal, unlike the `truncated` path for MAX_NODE_CHARS. Also, max_tokens is enforced in the mode tokenizer while `ctok`/PATH_MSG_MAX_TOKENS use o200k. A 2,000-token reply in another tokenizer can exceed 2,000 canonical tokens and will be silently middle-truncated in later prompts, contrary to the claim that AI replies are 'already below this'.
 
-**Recommendation:** Store message content with ctok counted at its truncated length (cap each path message at the new-message allotment). Alternatively, always keep X verbatim, truncated, as its own tail item outside the j selection. Add a proptest case with an 8,000-char CJK or emoji user message just before a checkpoint, asserting that X's content is present verbatim.
+**Recommendation:** Map finish_reason=length to `error_code = 'truncated'` (status complete) with a 'continue' affordance. Either set PATH_MSG_MAX_TOKENS ≥ REPLY_RESERVE_TOKENS × TOKENIZER_SLACK, or drop the claim.
 
-## F-architecture-L3-8: Unbounded SSE attach connections each poll Postgres every second
+## F-architecture-L3-8: Merge-proposal input over a subtree is unbounded and unspecified
 
-The 20/min limit applies only to LLM calls, and auth endpoints are limited per IP. `GET /api/nodes/:id/stream` has no per-user cap on concurrent connections. Each attach to a node not in the local registry runs a DB read every `STREAM_FLUSH_MS`. One signed-in user, or a page that keeps reconnecting, can open hundreds of attaches and use up the pool, whose acquire timeout gives 503 for everyone. Together with the stuck-'streaming' rows above, these polls never end.
+'The subtree goes through the same truncation path' doesn't define anything: the truncation and checkpoint machinery is defined for root-to-node paths, not for a branch subtree with sub-branches. Nothing says which messages are included or in what order, how input is bounded against the summary model's window, or what the reservation is. A large branch could overflow the model's window or the reservation.
 
-**Recommendation:** Cap concurrent SSE attaches per user (e.g. 10) and per node, close polling attaches after the 5-minute whole-answer timeout plus a margin, and share a single poller per node across attachers.
+**Recommendation:** Specify the input: for example, the branch's main path plus its existing nested merge summaries, capped at N tokens with drop-oldest. State the reservation size and add a property test that keeps the input within the cap.
 
-## F-architecture-L3-9: Changing BLOCK_TOKENS or the canonical tokenizer silently invalidates the stored checkpoint fields
+## F-architecture-L3-9: Compaction precompute is global, small and non-durable, so on-demand chains land on the critical path after deploys
 
-`ctok`, `block_acc`, `is_checkpoint` and `compaction_summary` are written once and treated as 'valid forever', but they were computed with the current `BLOCK_TOKENS` and tokenizer. `BLOCK_TOKENS` is an env var, and the doc says config changes need no code change. After a change, old nodes keep old checkpoint spacing while new ones use the new spacing. The startup check verifies only the inequality, so the 5,700-tail guarantee and the summary-call bound no longer hold for existing canvases.
+One global semaphore of 2 is shared by all users, the queue is lost on every restart (which happens on every push to main), and S(k) depends on S(p) recursively. After a restart, a send may need several sequential summary calls inside a single 30 s on-demand window. It then falls back to drop-oldest, which loses context and breaks AC-10.4 prefix stability for that send, and TTFT (NFR-2) degrades.
 
-**Recommendation:** Make BLOCK_TOKENS a compile-time constant, or store `checkpoint_version` on nodes and refuse to start (or recompute lazily) when it differs from config.
+**Recommendation:** At boot, enqueue missing summaries for checkpoints on recently active canvases (one query: `is_checkpoint AND compaction_summary IS NULL`). Use a per-user fair queue instead of a single global FIFO, and bound the on-demand chain length explicitly.
 
-## F-architecture-L3-10: Branching from a user_message puts two user turns in a row, which the layout rule says cannot happen
+## F-architecture-L3-10: TRUSTED_IP_HEADER can be spoofed unless the doc pins which header and how it is parsed
 
-AC-5.1 allows a whole-node branch from a `user_message`, so a path can contain U1 →branch→ U2. U1's answer is a sibling and is left off the path. The assembled prompt then has two consecutive user messages. The doc only handles the case where the tail starts with an assistant message, so the 'strictly alternate' claim fails here. Some provider APIs reject such a prompt or merge the turns, which changes the byte layout AC-10.4 depends on.
+The auth rate limits and login backoff key on the client IP from TRUSTED_IP_HEADER, and production only checks that the header is configured. If it is set to `X-Forwarded-For` and the client-supplied leftmost value is used, or the PaaS appends to the header rather than overwriting it, an attacker can rotate the IP freely and bypass the per-IP login/signup limits.
 
-**Recommendation:** Define how adjacent same-role messages are merged (concatenate them with a separator inside one user turn) and add this tree shape to the proptest generator.
-
-## F-architecture-L3-11: The 'UTC day' depends on the session time zone, which is never set
-
-`date_trunc('day', timestamptz)` uses the session's `TimeZone`. Managed Postgres defaults vary, and per-connection settings can drift. On a non-UTC session the cap resets at the wrong time, and different pool connections could disagree.
-
-**Recommendation:** Use `date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`, or set `TimeZone=UTC` in the pool's `after_connect`.
+**Recommendation:** Require a header the platform overwrites (e.g. Fly-Client-IP), or parse XFF from the right with a configured hop count. Add a test that a client-supplied header value doesn't change the rate-limit key.

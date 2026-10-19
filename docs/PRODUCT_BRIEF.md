@@ -27,13 +27,12 @@ _Auto-generated from recorded factory state. Do not edit inside this block._
 **Verified & accepted work:** none yet
 
 **Open risks:**
-- F-architecture-L3-1 (high): Compaction cutoff moves on almost every send, so long paths re-summarize before each answer
-- F-architecture-L3-2 (high): After a Postgres outage over 60 s, the sweeper kills live streams and their final writes are silently discarded
-- F-architecture-L3-3 (medium): Prefix-sum token counting on canvas load can't equal assemble() once compaction, truncation, summary caps or mixed tokenizers apply
-- F-architecture-L3-4 (medium): Daily token cap and llm_usage miss calls that error, time out or lose their stream
-- F-architecture-L3-5 (medium): Rate-limit and daily-cap checks aren't ordered against the send transaction
-- F-architecture-L3-6 (medium): The account_deletions re-apply step can't recover deletions made after the restored backup
-- F-architecture-L3-7 (medium): Behavior when a message is sent inside an already-merged branch is undefined
+- F-architecture-L3-1 (high): Context-budget fit guarantee (NFR-7) is arithmetically inconsistent and has no runtime backstop
+- F-architecture-L3-2 (medium): Per-canvas merge budget makes merge permanently unavailable on long canvases
+- F-architecture-L3-3 (medium): NFR-6 (±5% counter accuracy) is silently weakened for non-local tokenizers
+- F-architecture-L3-4 (medium): POST /api/events has no stated ownership check or rate limit
+- F-architecture-L3-5 (medium): Delete behaviour of `llm_usage.node_id` is unspecified; a cascade would wipe the cost ledger and reset the daily cap
+- F-architecture-L3-6 (medium): Deploy-on-every-push with a 20 s drain routinely interrupts in-flight answers
 
 **Next:**
 - `factory run` to continue the architecture phase

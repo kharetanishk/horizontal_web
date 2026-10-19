@@ -24,7 +24,7 @@ Rebuild the four mechanisms on one property: **the conversation is an immutable,
    - Summaries are precomputed in the background when a checkpoint closes on a long path.
    - The cutoff is the smallest checkpoint that fits, so it moves at most once per `BLOCK_TOKENS` of conversation. Prompt prefixes stay byte-stable for provider caching.
    - Fixed per-part allotments plus a startup-checked budget inequality guarantee a fitting prompt.
-   - Merged summaries are bounded per canvas (`MERGE_BUDGET_TOKENS`) and are never dropped.
+   - Merged summaries are bounded per root-to-leaf path (`MERGE_BUDGET_TOKENS`) and are never dropped. A post-assembly backstop enforces the budget even if an assumption breaks.
 2. **One truth for counting.** The token counter is `assemble()` in dry run. Because the tail is bounded by `BLOCK_TOKENS`, that is cheap enough to run for every node on canvas load.
 3. **Attachable streams.**
    - An answer is an in-memory buffer plus a `watch` state.
