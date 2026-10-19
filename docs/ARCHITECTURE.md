@@ -39,7 +39,7 @@ Browser (Next.js static export, React Flow, Zustand)
    ▼
 nodemind-api (one Rust binary: Axum + Tokio)
    ├── http      routes, auth extractor, ownership checks, Origin check, error mapping, rate limits
-   ├── auth      signup/login/logout, argon2id, Postgres sessions
+   ├── auth      invite accept/login/logout, argon2id, Postgres sessions
    ├── canvas    canvases, nodes, edges, positions, collapse, merge
    ├── chat      send/retry handlers (admission transaction)
    ├── stream    stream registry, SSE attach, instance liveness lock, sweeper, graceful drain
@@ -61,15 +61,16 @@ Postgres 16 (managed)     LLM provider(s) over HTTPS
 | `apps/api` | Single crate, modules above | Cargo workspace with one member. `context` has no IO, so it is unit- and property-tested in isolation. Split crates only when a second binary (worker, phase 2+) needs shared code |
 | `apps/api/prompts/` | System prompts per mode (main, doubt, summary) and the 5 quick-action templates, loaded with `include_str!` | Versioned with the code |
 | `llm` gateway | Only module that talks to providers (NFR-13). Interface: `stream(mode, messages) -> Stream<Delta>` then `Usage`; `complete(mode, messages) -> (String, Usage)` | Built on the `genai` crate (assumption, spike first). Fallback: `async-openai`. [ADR 0005](ADR/0005-llm-gateway-and-tokenizer.md) |
-| Postgres | All state: users, sessions, canvases, nodes, edges, llm_usage, events, deletions | pgvector is **not** enabled in phase 1 |
+| Postgres | All state: users, sessions, canvases, nodes, edges, llm_usage, events, invites, tombstones | pgvector is **not** enabled in phase 1 |
 
 ## Send-message flow (FR-3 – FR-10)
 
 1. The client sends `POST /api/canvases/:id/messages` with client-generated UUIDs for the new user and AI nodes. The input text stays in the client until the `created` event arrives, so a failed request never loses the question (FR-18).
 2. **Rate limit first.** The in-process token bucket (20 LLM calls/min per user) is checked before any database work. Over the limit, the handler returns 429 and writes nothing.
 3. **Admission transaction**, all or nothing:
-   - lock the user's metering row (`SELECT … FROM users WHERE id = $u FOR UPDATE`) and check the daily cap and the in-flight count (see [Metering](#metering));
-   - take `FOR SHARE` on the canvas row, so sends serialize against merge confirms, which take `FOR UPDATE`;
+   - lock the user's metering row (`SELECT … FROM users WHERE id = $u FOR NO KEY UPDATE`) and check the daily cap and the in-flight count (see [Metering](#metering));
+   - lock the canvas row (`UPDATE canvases SET updated_at = now() WHERE id = $c AND user_id = $u RETURNING root_node_id`). This is the ownership check, the list-order bump and a row lock in one statement. Sends on one canvas, merge confirms and the first-message `root_node_id` write therefore serialize, and no lock is ever upgraded.
+     Locks are always taken in the order user, then canvas, so admission can't deadlock. 40P01/40001 in admission maps to 409 anyway, and a concurrent-first-send test asserts one 201 and one 409 ([F-L3-6](reports/reviews/architecture-L3.md));
    - check canvas ownership, that the parent is `complete`, and the anchor;
    - insert `user_message` (complete), `ai_message` (`streaming`, empty, `owner_key` = this instance), the two edges, and the `llm_usage` reservation.
    Any failed check rolls back, so a capped user gets a clean 429 and no rows.
@@ -96,7 +97,7 @@ Postgres 16 (managed)     LLM provider(s) over HTTPS
 2. Loop: on each watch change, send `delta` with the text since the last offset sent.
 3. On a terminal status, send exactly one `done` or `error`, then close.
 4. An SSE comment (`:\n\n`) is sent every 15 s on every attach, so edge proxies never cut silent phases: first-token wait, an on-demand compaction, or `finalizing`. An integration test holds the fake provider silent for 90 s behind the proxy ([F-L3-6](reports/reviews/architecture-L3.md)).
-A slow reader skips intermediate watch values and receives one larger delta. Nothing is dropped and the writer never waits, so terminal events always arrive while a client is connected ([F-L3-9](reports/reviews/architecture-L3.md)). Reloading the page, opening a second tab, or reconnecting after a network drop all just attach again. If the node is not in this instance's registry (for example during deploy overlap), attach falls back to reading the row every `STREAM_FLUSH_MS` until it settles. All attachers of one node share **one poller** (an in-process map from node to a `watch` fed by a single poll task). A polling attach closes after 5 min (the 4-min answer timeout plus margin). Concurrent attaches are capped at 10 per user (429 beyond).
+A slow reader skips intermediate watch values and receives one larger delta. Nothing is dropped and the writer never waits, so terminal events always arrive while a client is connected ([F-L3-9](reports/reviews/architecture-L3.md)). Reloading the page, opening a second tab, or reconnecting after a network drop all just attach again. If the node is not in this instance's registry (for example during deploy overlap), attach falls back to reading the row every `STREAM_FLUSH_MS` until it settles. All attachers of one node share **one poller** (an in-process map from node to a `watch` fed by a single poll task). A polling attach lives `TASK_DEADLINE_SECS` + 60 s. It never closes silently: at the end it sends a final `snapshot` and a `reattach` event, and the client attaches again. Concurrent attaches are capped at 10 per user (429 beyond).
 
 **Instance liveness, without heartbeats.**
 - At boot, each instance picks a random `owner_key` (bigint). It holds `pg_advisory_lock(owner_key)` on a dedicated connection outside the pool for its whole lifetime. Postgres releases a session lock only when that session ends, which means the process died or its connection did.
@@ -106,7 +107,8 @@ A slow reader skips intermediate watch values and receives one larger delta. Not
   1. Collect `SELECT owner_key FROM nodes WHERE status = 'streaming' UNION SELECT owner_key FROM llm_usage WHERE settled_at IS NULL`, minus `$me`. This also catches orphaned compaction and merge-proposal reservations, which have no streaming node.
   2. For each key, try `pg_try_advisory_xact_lock(key)` in a transaction. Success proves that owner is gone. In that transaction, mark its streaming nodes `error`/`interrupted` and settle its open reservations from what exists, with `estimated = true`. An answer is charged its locally counted prompt (`assemble(parent)` is deterministic) plus its last flushed content. A compaction is charged its locally counted input. Only a merge proposal, which has no flushed state, is charged its reservation. A crash loop therefore doesn't burn users' caps ([F-L3-9](reports/reviews/architecture-L3.md)).
 - An instance never sweeps its own key, so a Postgres outage of any length can't kill a single instance's live streams.
-- If the lock connection drops, the instance re-acquires the same key on reconnect. A sweep by another instance during that gap is undone by the reclaim rule in send step 7. Accepted edge case, which needs both a lock-connection partition and a second live instance, i.e. a deploy overlap:
+- The instance tracks lock-held state in an `AtomicBool`. While the lock is not held, sends, retries and merge proposals return 503 `unavailable` and `/api/healthz` fails, so it never admits work under a key it doesn't hold ([F-L3-8](reports/reviews/architecture-L3.md)).
+- If the lock connection drops, the instance re-acquires the same key on reconnect with a `pg_try_advisory_lock` retry loop (never the blocking form). A sweep by another instance during that gap is undone by the reclaim rule in send step 7. Accepted edge case, which needs both a lock-connection partition and a second live instance, i.e. a deploy overlap:
   - Clients attached on the sweeping instance see `interrupted` and the Retry button. A reload shows the reclaimed answer.
   - Clicking Retry first supersedes it, by design: the user asked for a new answer.
   - Settlement is keyed by reservation id and always overwrites, so the owner's actual usage replaces the sweeper's estimate.
@@ -114,8 +116,8 @@ A slow reader skips intermediate watch values and receives one larger delta. Not
 - This also replaces the heartbeat column, the 10 s heartbeat writes and the 60 s staleness guess.
 
 **Graceful shutdown (SIGTERM).**
-1. New sends and retries get 503 `unavailable`.
-2. Running tasks get `DRAIN_SECS` (270 s) to finish. Startup checks `DRAIN_SECS ≥ whole-answer timeout (240 s) + 30 s`, so a drain always outlasts any answer ([F-L3-5](reports/reviews/architecture-L3.md)). The new instance serves new requests meanwhile, because the engine is overlap-safe. So a deploy on push never cuts a normal answer ([F-L3-6](reports/reviews/architecture-L3.md)).
+1. `/api/healthz` returns 503 at once, so the platform stops routing new requests here. New sends and retries that still arrive get 503 `unavailable` ([F-L3-9](reports/reviews/architecture-L3.md)).
+2. Running tasks get `DRAIN_SECS` to finish. Every LLM task has one deadline, `TASK_DEADLINE_SECS` (240 s), covering the whole task: on-demand compaction, the pre-first-token retry and the answer. Startup checks `DRAIN_SECS ≥ TASK_DEADLINE_SECS + 30` (default 270), so a drain outlasts every task except a final write still retrying through a Postgres outage (see Failure handling) ([F-L3-5](reports/reviews/architecture-L3.md)). The new instance serves new requests meanwhile, because the engine is overlap-safe. So a deploy on push never cuts a normal answer ([F-L3-6](reports/reviews/architecture-L3.md)).
 3. Tasks still running are cancelled: stream tasks, compaction precomputes and merge proposals. Each cancelled stream task writes its own `(id, attempt)` as `error`/`interrupted` with its partial text. Every cancelled task settles its own reservation.
 4. The process exits and its lock is released.
 No broad `WHERE status = 'streaming'` update exists anywhere.
@@ -199,7 +201,7 @@ NFR-1 (path fetch + assembly < 200 ms p95 at 200-deep paths) is expected to hold
 `llm_usage` is a ledger of reservations. Every LLM call (answer, retry, compaction, merge proposal) is admitted by one transaction:
 
 ```sql
-SELECT 1 FROM users WHERE id = $u FOR UPDATE;            -- serializes this user's metering only
+SELECT 1 FROM users WHERE id = $u FOR NO KEY UPDATE;     -- serializes metering, doesn't block FK inserts
 SELECT coalesce(sum(CASE WHEN settled_at IS NULL THEN reserved_tokens
                          ELSE prompt_tokens + completion_tokens END), 0) AS spent_today,
        count(*) FILTER (WHERE settled_at IS NULL AND kind <> 'compaction') AS in_flight
@@ -213,7 +215,7 @@ INSERT INTO llm_usage (…, reserved_tokens, owner_key) VALUES (…);
   - an answer reserves input ≤ 14,000 (enforced by the runtime backstop) plus output ≤ `max_tokens` 2,000, plus a 5% provider-framing margin: 16,800;
   - a compaction reserves its bounded input, `(COMPACTION_SUMMARY_MAX_TOKENS + BLOCK_TOKENS + PATH_MSG_MAX_TOKENS + FRAME_TOKENS) × r_up` of the summary model, plus its output and the same margin (about 6,800);
   - a merge proposal reserves its 4,000 input plus 100 output, plus the margin.
-  Startup checks that every reservation is ≤ `DAILY_TOKEN_CAP` / 10, so the cap can never lock compaction out ([F-L3-5](reports/reviews/architecture-L3.md)).
+  Startup checks that every reservation is ≤ `DAILY_TOKEN_CAP` / 10. Near the cap, a compaction can still be refused; the send then uses drop-oldest (`compaction_fallback`). A test puts a user one answer below the cap and asserts the answer is still sent ([F-L3-11](reports/reviews/architecture-L3.md)).
 - Each provider attempt has its own reservation, including the automatic pre-first-token retry. The cap holds up to provider framing error beyond the 5% margin (NFR-6 bounds it at ±5%).
 - A 4th concurrent call is rejected with 429, not queued ([F-L3-5](reports/reviews/architecture-L3.md)).
 - Settlement writes provider usage when the provider reports it. Otherwise it writes the locally counted prompt plus locally counted streamed completion, with `estimated = true`. That covers broken streams, timeouts and failed compaction calls, so every billed call leaves a settled row ([F-L3-4](reports/reviews/architecture-L3.md)).
@@ -231,15 +233,16 @@ Postgres 16. All ids are UUID v7. Text enums use `CHECK` constraints. The brief'
 | `canvases` | `id`, `user_id`, `title`, `root_node_id` (nullable), `created_at`, `updated_at` | FK `user_id → users ON DELETE CASCADE`; index `(user_id, updated_at DESC)`. The first message sets `root_node_id` with `WHERE root_node_id IS NULL`; no row updated → 409. Merges lock the canvas row to check the per-path merge budget |
 | `nodes` | `id`, `canvas_id`, `type` (`user_message`/`ai_message`), `content text`, `status` (`streaming`/`complete`/`error`), `error_code`, `attempt int`, `owner_key bigint` (instance streaming it), `model`, `prompt_tokens`, `completion_tokens`, `cached_tokens`, `ctok int`, `tok jsonb` (per-tokenizer counts), `block_acc int`, `is_checkpoint bool`, `compaction_summary`, `compaction_tokens int`, `position_x`, `position_y`, `created_at`, `updated_at` | FK `canvas_id → canvases ON DELETE CASCADE`; `UNIQUE(canvas_id, id)`; index `canvas_id`; partial index `(owner_key) WHERE status = 'streaming'` (sweeper); `CHECK (char_length(content) <= 100000)`; `CHECK (compaction_summary IS NULL OR is_checkpoint)` |
 | `edges` | `id`, `canvas_id`, `source_id`, `target_id`, `type` (`reply`/`branch`), `anchor jsonb`, `doubt_type` (`simpler`/`example`/`why`/`deeper`/`wrong`/`free`), `merge_summary`, `merge_tokens int`, `merged_at`, `merged_node_count int`, `collapsed bool`, `created_at` | Composite FKs `(canvas_id, source_id)` and `(canvas_id, target_id) → nodes(canvas_id, id) ON DELETE CASCADE`; `UNIQUE(target_id)` (tree, path-walk index); partial `UNIQUE(source_id) WHERE type = 'reply'`; index `source_id`; index `canvas_id`; `CHECK ((type = 'branch') = (anchor IS NOT NULL AND doubt_type IS NOT NULL))`; `CHECK (type = 'branch' OR (merge_summary IS NULL AND NOT collapsed))` |
-| `llm_usage` | `id bigserial`, `user_id`, `node_id` (nullable, **no FK**: the ledger outlives canvas deletion, so deleting a canvas never refunds the daily cap or erases cost records; [F-L3-5](reports/reviews/architecture-L3.md)), `kind` (`answer`/`compaction`/`merge_proposal`), `model`, `owner_key`, `reserved_tokens`, `prompt_tokens`, `completion_tokens`, `cached_tokens`, `estimated bool`, `created_at`, `settled_at` | FK `user_id → users ON DELETE CASCADE`; index `(user_id, created_at)`; partial index `(user_id) WHERE settled_at IS NULL`; `CHECK (settled_at IS NULL OR prompt_tokens IS NOT NULL)` |
-| `deletions` | `kind` (`user`/`canvas`), `id`, `deleted_at` | No FK. Tombstones for user and canvas deletions; restore runbook input (see Deployment) |
+| `llm_usage` | `id bigserial`, `user_id` (plain UUID, **no FK**: usage counts hold no content and are kept as pseudonymous cost records after account deletion, as the privacy notice states; with invite-only accounts, deleting an account can't be used to reset the cap), `node_id` (nullable, **no FK**: the ledger outlives canvas deletion, so deleting a canvas never refunds the daily cap or erases cost records; [F-L3-5](reports/reviews/architecture-L3.md)), `kind` (`answer`/`compaction`/`merge_proposal`), `model`, `owner_key`, `reserved_tokens`, `prompt_tokens`, `completion_tokens`, `cached_tokens`, `estimated bool`, `created_at`, `settled_at` | Index `(user_id, created_at)`; partial index `(user_id) WHERE settled_at IS NULL`; `CHECK (settled_at IS NULL OR prompt_tokens IS NOT NULL)` |
+| `tombstones` | `kind` (`user_deleted`/`canvas_deleted`/`password_reset`), `id`, `at` | No FK. Restore runbook input (see Deployment) |
+| `invites` | `token_hash bytea`, `user_id`, `expires_at`, `used_at` | PK `token_hash`; FK `user_id → users ON DELETE CASCADE` |
 | `events` | `id bigserial`, `user_id`, `canvas_id`, `kind` (`branch_created`/`merge_confirmed`/`merge_updated`/`back_to_main`/`collapse`), `payload jsonb`, `created_at` | FKs `ON DELETE CASCADE`; index `(user_id, created_at)`. Payload is a typed Rust enum per `kind`; never message text except proposed vs. confirmed merge summaries |
 
 Choices behind the model:
 
 - **Branch state lives on the branch edge** (`merge_summary`, `collapsed`). An origin can have several branches, each merged or collapsed separately. The origin in "stored against the origin node" (AC-13.2) is the edge's `source_id`.
 - **Content is immutable once a node is `complete`.** Only `streaming`/`error` AI nodes change content. An `error` node has no children, because sends need a complete parent. So checkpoint fields, summaries and anchors are never invalidated.
-- **Merges are snapshots** ([F-L3-7](reports/reviews/architecture-L3.md)). A merged branch can still be continued. Downstream prompts keep the confirmed summary. The edge stores `merged_node_count`, the subtree size counted under the canvas `FOR UPDATE` lock. Sends hold `FOR SHARE`, so no send can interleave, and since subtrees only grow, `stale = subtree size > merged_node_count` is exact ([F-L3-3](reports/reviews/architecture-L3.md)). The UI shows it as and the UI offers "N new messages since merge · update summary". Re-merging replaces the summary and writes `merge_updated`, not a second `merge_confirmed`, so the metrics don't double-count. The same summary again is a no-op. Merge proposal and merge confirm return 422 `branch_streaming` while any node in the branch subtree is streaming.
+- **Merges are snapshots** ([F-L3-7](reports/reviews/architecture-L3.md)). A merged branch can still be continued. Downstream prompts keep the confirmed summary. The edge stores `merged_node_count`, the subtree size counted while the merge holds the canvas row lock. Sends take the same lock, so no send can interleave, and since subtrees only grow, `stale = subtree size > merged_node_count` is exact ([F-L3-3](reports/reviews/architecture-L3.md)). The UI shows it as and the UI offers "N new messages since merge · update summary". Re-merging replaces the summary and writes `merge_updated`, not a second `merge_confirmed`, so the metrics don't double-count. The same summary again is a no-op. Merge proposal and merge confirm return 422 `branch_streaming` while any node in the branch subtree is streaming.
 - **Anchor JSON** (brief shape, `kind` discriminated; the Rust enum is the source for TS via ts-rs): `{"kind":"none"}` · `{"kind":"text","start":412,"end":540,"text":"…"}` · `{"kind":"code","start":900,"end":1340,"start_line":5,"end_line":9,"text":"…"}`.
   - `start`/`end` are UTF-16 code-unit offsets into the raw markdown `content`, matching JS string indexing. For a `code` anchor they cover the whole code block, and `text` is the selected lines.
   - The server never slices Rust strings by those offsets. It converts with `encode_utf16()`, checks `start <= end <= len`, and compares `String::from_utf16(&u[start..end])` with `text` (AC-6.1). A `code` slice must also start with a fence line, and lines `start_line..=end_line` must equal `text`. Any failure → 422 `invalid_anchor`.
@@ -249,7 +252,7 @@ Choices behind the model:
 - **Every reservation settles exactly once, whatever happens** ([F-L3-1](reports/reviews/architecture-L3.md)):
   - Each LLM task owns a `Reservation` guard. Every exit path settles it from the task's in-memory counts: success, error, a fenced write that matches no row (deleted canvas, superseded retry), cancellation and panic. On a panic or drop, the guard spawns the settle.
   - If the owner is dead and the node or parent is gone, the sweeper settles at the reserved amount.
-  - Safety net: any reservation unsettled after 15 min (longer than any call's lifetime) is settled at its reserved amount by any instance's sweeper. `in_flight` can therefore never leak.
+  - Safety net: any reservation unsettled after 15 min (startup checks this is > `TASK_DEADLINE_SECS`) is settled at its reserved amount by any instance's sweeper. `in_flight` can therefore never leak.
 
 **Migrations**:
 - SQLx migrations are embedded with `sqlx::migrate!` and run at startup under SQLx's advisory lock.
@@ -259,7 +262,7 @@ Choices behind the model:
 
 ## API
 
-JSON over HTTPS under `/api`, same origin as the web app. Auth is an `HttpOnly; Secure; SameSite=Strict` session cookie. Every endpoint except signup/login/livez/healthz/meta needs a session (401 otherwise, AC-1.2). Any canvas, node or edge not owned by the caller returns **404**, never 403 (NFR-8).
+JSON over HTTPS under `/api`, same origin as the web app. Auth is an `HttpOnly; Secure; SameSite=Strict` session cookie. Every endpoint except accept-invite/login/livez/healthz/meta needs a session (401 otherwise, AC-1.2). Any canvas, node or edge not owned by the caller returns **404**, never 403 (NFR-8).
 
 **Error format** (all non-2xx and the SSE `error` event):
 
@@ -270,7 +273,7 @@ JSON over HTTPS under `/api`, same origin as the web app. Auth is an `HttpOnly; 
 Codes:
 - 400 `bad_request`
 - 401 `unauthorized`
-- 403 `forbidden_origin`, `signup_unavailable`
+- 403 `forbidden_origin`
 - 404 `not_found`
 - 409 `conflict`
 - 422 `invalid_anchor`, `parent_not_complete`, `branch_streaming`, `merge_budget_exhausted`
@@ -280,7 +283,7 @@ Codes:
 
 | Method & path | Request | Response |
 | --- | --- | --- |
-| `POST /api/auth/signup` | `{email, password}` (password 12–128 chars; longer → 400 before any hashing) | 201 `{user}` + cookie. Not allowlisted and already registered both return the same 403 `signup_unavailable` after the same argon2 work (see Auth) |
+| `POST /api/auth/accept-invite` | `{token, password}` (password 12–128 chars; longer → 400 before any hashing) | 201 `{user}` + cookie. An invalid, used or expired token → 401, with no account and no hashing |
 | `POST /api/auth/login` | `{email, password}` | 200 `{user}` + cookie; 401 on bad credentials (same message and same argon2 work for unknown email) |
 | `POST /api/auth/logout` | – | 204, session row deleted |
 | `GET /api/me` | – | `{id, email}` |
@@ -316,7 +319,7 @@ Rules:
   - 20 LLM calls/min per user;
   - auth endpoints 10/min per client IP;
   - progressive delays on failed logins per (email, IP), and per email across IPs only after 20 failures/h, capped at 2 s. These delay but never lock out.
-  A successful login sets a signed, HttpOnly `device` cookie bound to that email. A login presenting it skips the per-email delay and the global auth bucket, so attackers can't deny service to a returning user (OWASP device-cookie pattern; [F-L3-7](reports/reviews/architecture-L3.md)).
+  A successful login sets a signed, HttpOnly `device` cookie bound to that email. A login presenting it skips **only** the per-email delay, so attackers can't deny service to a returning user (OWASP device-cookie pattern). It stays inside the global auth bucket and the argon2 semaphore, and has its own bucket of 5/min per cookie id, so a replayed cookie can't reopen the CPU-flood path.
   The client IP comes only from `TRUSTED_IP_HEADER`, which must name a single-value header that the platform **overwrites** on every request (`Fly-Client-IP`, `CF-Connecting-IP`). Production refuses to start without it, or with `X-Forwarded-For`/`Forwarded`, which clients can pre-seed. A test asserts that a client-supplied value of that header, sent through the platform, doesn't change the limiter key ([F-L3-10](reports/reviews/architecture-L3.md)). Argon2 runs in `spawn_blocking` behind a semaphore of 2, with a bounded wait (`try_acquire` with a 2 s timeout, then 503 `unavailable` + `Retry-After`). A global auth bucket of 120/min across all IPs bounds total argon2 work, so a distributed flood degrades into fast 503s instead of an unbounded queue ([F-L3-4](reports/reviews/architecture-L3.md)). Limiter maps expire idle keys and are bounded.
 - **Daily token cap and concurrency**: the [Metering](#metering) ledger, exact.
 - **Panics**: `CatchPanicLayer` → 500. The panic hook logs only the location and `request_id`. `JsonRejection` → generic `bad_request` that echoes no input (NFR-9 test).
@@ -332,23 +335,25 @@ Rules:
 - Lookups use `WHERE token_hash = $1 AND expires_at > now()`. The sweeper deletes expired rows.
 - Logout and account deletion remove the rows immediately (AC-20.1).
 
-**Equal-work responses.**
-- Login verifies against a fixed dummy hash for unknown emails.
-- When signup is closed (no allowlist and `SIGNUP_OPEN=false`), it returns the 403 at once without hashing; there is nothing to enumerate.
-- Otherwise signup always computes the argon2id hash of the submitted password before the allowlist check and the insert. "Not allowlisted", "already registered" and "created" therefore cost the same, and the first two return the same 403.
+**Invite-only accounts; no self-signup in phase 1.** Phase 1 is a moderated test with a handful of learners. Self-signup, even behind an allowlist, lets anyone who knows an allowlisted address claim it first, and proving email ownership needs an email provider.
+1. The operator runs `api invite <email>`. It creates the `users` row with no password, and prints a single-use link carrying a 32-byte token. Only the token's SHA-256 is stored, in `invites(token_hash, user_id, expires_at, used_at)`, with a 7-day expiry.
+2. The operator sends the link to the learner out of band.
+3. `POST /api/auth/accept-invite` sets the password and marks the token used, in one transaction.
+There is no public signup endpoint, so there is nothing to enumerate.
+- Login verifies against a fixed dummy hash for unknown emails and for users who have no password yet.
+- `api reset-password <email>` issues a new invite link for an existing user. It clears the password hash and deletes that user's sessions.
+- Opening signup to the public needs an email provider and verification, which is a later phase ([ADR 0004](ADR/0004-password-auth-postgres-sessions.md)).
 
-Signup is limited to `SIGNUP_ALLOWLIST` and fails closed: an empty or missing list means signup is closed. Opening it to everyone needs `SIGNUP_OPEN=true`, and the effective mode is logged at startup.
-
-Not in phase 1: email password reset (the operator uses `api reset-password <email>`, which also deletes that user's sessions), magic links, OAuth. Single role; no sharing.
+Not in phase 1: self-signup, email password reset, magic links, OAuth. Single role; no sharing.
 
 ## Security and data protection
 
 - **Secrets** come only from environment variables. They are never sent to the client and never logged (NFR-9). `.env` is local-only and git-ignored.
 - **Input validation** at the boundary: U+0000 replaced with U+FFFD, serde types with length limits, anchor checks, UUID path params, a 1 MB body limit. Markdown is rendered without raw HTML (no `rehype-raw`).
 - **PII**: emails and message content. Content goes only to the configured LLM providers named in the privacy notice (FR-21), never to logs (NFR-9 test). Deleted accounts remain in backups for up to 7 days; the notice says so.
-- **Deletion tombstones** ([F-L3-3](reports/reviews/architecture-L3.md)). Account and canvas deletions record `(kind, id)` (UUIDs, no other PII) in two places that fail independently:
-  1. the `deletions` table;
-  2. a structured log line `event=deleted kind=… id=…`, shipped to the host's log drain with retention ≥ 8 days, longer than backup retention.
+- **Tombstones**. Account deletions, canvas deletions and password resets record `(kind, id)` (UUIDs, no other PII) in two places that fail independently:
+  1. the `tombstones` table;
+  2. a structured log line `event=tombstone kind=… id=…`, shipped to the host's log drain with retention ≥ 8 days, longer than backup retention.
   A database loss can't erase the second copy. The restore runbook under Deployment uses both.
 - **Headers**: HSTS, `nosniff`, `Referrer-Policy: same-origin`, and `Content-Security-Policy: default-src 'self'; script-src 'self' <hashes>`. The build hashes every inline script in `apps/web/out/*.html` into `csp-hashes.json`, and the static handler serves the matching hashes per page (**assumption**, first web build). If hashing proves unworkable, `'unsafe-inline'` is recorded as an accepted risk in an ADR.
 
@@ -358,15 +363,15 @@ Not in phase 1: email password reset (the operator uses `api reset-password <ema
 | --- | --- |
 | LLM connect error, 429 or 5xx **before the first token** | One automatic retry after 1–2 s (jittered), with its own reservation (skipped if the cap refuses it). Then `status = error` and SSE `error` `llm_unavailable`; the UI shows "Answer interrupted" + Retry |
 | LLM stream breaks **after tokens** | No automatic retry. Partial text saved, `status = error`, usage settled (estimated if needed); Retry replaces the answer (AC-18.1) |
-| LLM timeouts | Connect 10 s; first token 30 s; gap between chunks 30 s; whole answer 4 min. All config. Each ends like the row above |
+| LLM timeouts | Connect 10 s; first token 30 s; gap between chunks 30 s; whole task `TASK_DEADLINE_SECS` (240 s, includes compaction and the retry). All config. Each ends like the row above |
 | Compaction summary missing at send | Normally precomputed. Otherwise computed on demand (30 s timeout, `compaction_on_critical_path` log), then drop-oldest fallback (`compaction_fallback` log). Budget still holds |
 | Merge proposal fails | 502; the user types the summary |
 | Client disconnects mid-stream | Task finishes and saves. Reopening attaches via `GET /api/nodes/:id/stream`: snapshot, then live deltas |
 | Postgres outage of any length mid-stream or after the stream | The task keeps streaming to attached clients from memory. Flushes fail and are skipped. The final write retries until it lands (`finalizing` shown meanwhile). A single instance never sweeps itself; another instance's sweep is reclaimed by the fenced final write. Tests: pause Postgres 70 s mid-stream, and 5 min after stream end; resume; assert `complete` |
 | Process crash (SIGKILL, OOM) mid-stream | Up to 1 s of text since the last flush is lost. The lock session ends, so the next sweep (this instance after restart, or the other one during overlap) marks those nodes `interrupted` and settles their reservations. The user sees Retry |
 | Host loss or network partition of an instance | Server TCP keepalives end its lock session within about 30 s, then the sweep runs as above. Test: drop one instance's packets with iptables |
-| Deploy (SIGTERM) | 20 s drain; then each remaining task marks only its own `(id, attempt)` as interrupted, with partial text, and settles its own reservation |
-| Process exits while a final write is still retrying | Nothing more can be done in-process. The sweep marks the node `interrupted` with the last flushed text; `final_write_abandoned` logged. **Explicit NFR-11 exception**: a Postgres outage that outlasts both the answer and the process's remaining life (e.g. it spans a deploy's 300 s drain) can lose up to the text after the last flush |
+| Deploy (SIGTERM) | Readiness fails at once; `DRAIN_SECS` (270 s) drain; then each remaining task marks only its own `(id, attempt)` as interrupted, with partial text, and settles its own reservation |
+| Process exits while a final write is still retrying | Nothing more can be done in-process. The sweep marks the node `interrupted` with the last flushed text; `final_write_abandoned` logged. **Explicit NFR-11 exception**: a Postgres outage that outlasts both the answer and the process's remaining life (e.g. it spans a deploy's `DRAIN_SECS` drain) can lose up to the text after the last flush |
 | Retry clicked twice, or two tabs | The compare-and-set lets one through; the other gets 409. A superseded task can't write (fence) |
 | Capped or rate-limited user | 429 before any row is written (send, retry, merge proposal) |
 | Postgres down | `/api/healthz` 503 (readiness only; liveness stays up so in-flight streams survive). Requests fail 503; creation is one transaction, and the client keeps the typed question |
@@ -426,25 +431,28 @@ Not in phase 1: email password reset (the operator uses `api reset-password <ema
 - Running more than one instance permanently only requires moving the token buckets into Postgres.
 - The advisory-lock connection needs a direct (non-transaction-pooled) connection.
 
-**Health checks**: `/api/livez` (no DB) is the liveness check; `/api/healthz` (DB ping) is readiness. The platform's kill timeout must be ≥ `DRAIN_SECS` + 10 s (280 s; Fly allows up to 300 s). This is checked at host choice.
+**Health checks**: `/api/livez` (no DB) is the liveness check; `/api/healthz` (DB ping) is readiness. The platform's kill timeout must be ≥ `DRAIN_SECS` + 10 s (280 s; Fly allows up to 300 s). At host choice, confirm that the proxy stops routing on failed readiness or on SIGTERM.
 
 **Rollback**: redeploy the previous image tag. Migrations are backward compatible for one release.
 
 **Restore runbook** (drilled before launch, then monthly; results go in `docs/DAILY_LOG.md`):
 1. Prefer PITR to just before the incident.
 2. Otherwise, restore the newest backup into a fresh database.
-3. In **both** cases, collect tombstones newer than the restore point ([F-L3-4](reports/reviews/architecture-L3.md)): `deletions` from the live DB if it is readable or from any newer backup, plus every `event=deleted` line in the log drain since the restore point.
-4. Re-apply them as `DELETE FROM users WHERE id = ANY($user_ids)` and `DELETE FROM canvases WHERE id = ANY($canvas_ids)` (both cascade).
-5. Run `sqlx migrate info` and the row-count smoke queries.
-6. Only then open traffic.
-The monthly drill deletes a synthetic user and a synthetic canvas after the backup, and checks both stay deleted.
+3. In **both** cases, collect tombstones newer than the restore point: `tombstones` from the live DB if it is readable or from any newer backup, plus every `event=tombstone` line in the log drain since the restore point.
+4. Re-apply them:
+   - `DELETE FROM users WHERE id = ANY($deleted_users)` and `DELETE FROM canvases WHERE id = ANY($deleted_canvases)` (both cascade);
+   - `UPDATE users SET password_hash = NULL WHERE id = ANY($reset_users)`; those users get a fresh invite link.
+5. `DELETE FROM sessions` and `DELETE FROM invites`. Restored rows could include revoked sessions and used links, so everyone signs in again ([F-L3-2](reports/reviews/architecture-L3.md)).
+6. Run `sqlx migrate info` and the row-count smoke queries.
+7. Only then open traffic.
+The monthly drill deletes a synthetic user and a synthetic canvas, and resets a synthetic password, after the backup. It then checks all three stay applied and that an old session cookie is rejected.
 
 **Config (env)**:
 - Connections and keys: `DATABASE_URL`, `DATABASE_URL_DIRECT` (optional), provider API keys.
 - Models: `MODEL_MAIN`, `MODEL_DOUBT`, `MODEL_SUMMARY`.
 - Context budget: `CONTEXT_BUDGET_TOKENS=16000`, `REPLY_RESERVE_TOKENS=2000`, `COMPACTION_SUMMARY_MAX_TOKENS=1000`, `MERGE_BUDGET_TOKENS=2000`, `MERGE_PROPOSAL_INPUT_TOKENS=4000`. `BLOCK_TOKENS`, `PATH_MSG_MAX_TOKENS`, `FRAME_TOKENS` and the per-model `r_up`/`r_down` table are compile-time constants.
-- Auth: `SIGNUP_ALLOWLIST`, `SIGNUP_OPEN=false`, `TRUSTED_IP_HEADER`.
-- Limits and streaming: `DAILY_TOKEN_CAP`, `STREAM_FLUSH_MS=1000`, `DRAIN_SECS=270`, `MAX_NODE_CHARS=100000`.
+- Auth: `TRUSTED_IP_HEADER`, `APP_ORIGIN` (used in invite links and the Origin check).
+- Limits and streaming: `DAILY_TOKEN_CAP`, `STREAM_FLUSH_MS=1000`, `TASK_DEADLINE_SECS=240`, `DRAIN_SECS=270`, `MAX_NODE_CHARS=100000`.
 The budget inequality (Context builder step 3) is checked at startup. Changing the model for a mode is a config change only (NFR-13).
 
 ## Open questions and assumptions to settle in build

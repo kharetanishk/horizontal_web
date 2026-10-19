@@ -88,7 +88,7 @@ All values are targets for the phase 1 build, verified in tests or by measuremen
 Given/When/Then unless a measurable check is clearer. Each is meant to become an automated test (API: cargo test; UI: Playwright; LLM calls stubbed with a fake model unless stated).
 
 **FR-1 Sign in**
-- AC-1.1 Given a new allowlisted email, when the user completes sign-in, then a `users` row exists and the canvas list is shown. Given an email that is not allowlisted, signup returns 403 and no row is created.
+- AC-1.1 Given an operator-issued invite link, when the user sets a password through it, then they are signed in and the canvas list is shown; the link cannot be used again. Without a valid invite there is no way to create an account (ADR 0004).
 - AC-1.2 Given a signed-out visitor, when they request any canvas API, then the response is 401.
 
 **FR-2 Canvases**
