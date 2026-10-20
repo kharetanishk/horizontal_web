@@ -27,13 +27,11 @@ _Auto-generated from recorded factory state. Do not edit inside this block._
 **Verified & accepted work:** none yet
 
 **Open risks:**
-- F-architecture-L3-1 (high): Final write retries forever on permanent DB errors (e.g. NUL byte), pinning the node and an in-flight slot
-- F-architecture-L3-2 (medium): A merged branch's own summary is injected into prompts on that same branch
-- F-architecture-L3-3 (medium): Canvas deletions are resurrected by a backup restore (no tombstones)
-- F-architecture-L3-4 (medium): Unbounded argon2 queue lets anyone degrade login for every user
-- F-architecture-L3-5 (medium): Compaction reservation at the summary model's window maximum can exceed the daily cap, disabling compaction
-- F-architecture-L3-6 (medium): SSE has no keepalive; proxies will cut long silent phases
-- F-architecture-L3-7 (medium): Canvas load recomputes the mode-tokenizer count of every node from scratch after a restart
+- F-architecture-L3-1 (high): Advisory-lock liveness depends on a direct connection, but DATABASE_URL_DIRECT is optional
+- F-architecture-L3-2 (medium): The 15-minute reservation safety net assumes tasks end by TASK_DEADLINE_SECS, but the final write retries without limit
+- F-architecture-L3-3 (medium): Device-cookie signing key is missing from config
+- F-architecture-L3-4 (medium): NFR-11 'a completed node is never lost' can't hold with daily backups only
+- F-architecture-L3-5 (medium): Canvas load recomputes the full prompt assembly for every node
 
 **Next:**
 - `factory run` to continue the architecture phase
