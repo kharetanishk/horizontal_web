@@ -6,7 +6,16 @@ publish = false
 
 [dependencies]
 axum = "0.8"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate", "json", "uuid"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+uuid = { version = "1", features = ["v7"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# Throwaway Postgres for tests when DATABASE_URL is unset (no Docker needed).
+postgresql_embedded = { version = "0.21", features = ["tokio"] }
+
+# Custom harness: one Postgres server shared by all cases, stopped on exit.
+[[test]]
+name = "schema"
+harness = false
