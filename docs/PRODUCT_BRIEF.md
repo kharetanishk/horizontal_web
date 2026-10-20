@@ -22,7 +22,7 @@ See [learning/](learning/) and [DAILY_LOG.md](DAILY_LOG.md).
 <!-- factory:status:start -->
 _Auto-generated from recorded factory state. Do not edit inside this block._
 
-**Stage:** estimation (Estimation) · profile `standard`
+**Stage:** implementation (Implementation) · profile `standard`
 
 **Verified & accepted work:** none yet
 
@@ -34,5 +34,5 @@ _Auto-generated from recorded factory state. Do not edit inside this block._
 - F-architecture-L3-5 (medium): Canvas load recomputes the full prompt assembly for every node
 
 **Next:**
-- `factory run` to continue the estimation phase
+- `factory run` to continue the implementation phase
 <!-- factory:status:end -->
