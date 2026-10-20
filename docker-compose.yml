@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: nodemind # local-only throwaway credential, not a secret
       POSTGRES_DB: nodemind
     ports:
-      - "5432:5432"
+      - "${NODEMIND_PG_PORT:-5440}:5432" # 5432 is often taken by other local projects
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
