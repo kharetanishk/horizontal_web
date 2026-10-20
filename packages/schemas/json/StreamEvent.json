@@ -1,0 +1,455 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StreamEvent",
+  "description": "SSE events of a send/retry/attach stream. The variant name is the SSE `event:` field\nand `data` its JSON payload; `reattach` has no payload.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "edges": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Edge"
+              }
+            },
+            "nodes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Node"
+              }
+            }
+          },
+          "required": [
+            "nodes",
+            "edges"
+          ]
+        },
+        "event": {
+          "type": "string",
+          "const": "created"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "node": {
+              "$ref": "#/$defs/Node"
+            }
+          },
+          "required": [
+            "node"
+          ]
+        },
+        "event": {
+          "type": "string",
+          "const": "snapshot"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ]
+        },
+        "event": {
+          "type": "string",
+          "const": "delta"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "context_tokens": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "node": {
+              "$ref": "#/$defs/Node"
+            }
+          },
+          "required": [
+            "node",
+            "context_tokens"
+          ]
+        },
+        "event": {
+          "type": "string",
+          "const": "done"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/ErrorDetail"
+            },
+            "node": {
+              "$ref": "#/$defs/Node"
+            }
+          },
+          "required": [
+            "error",
+            "node"
+          ]
+        },
+        "event": {
+          "type": "string",
+          "const": "error"
+        }
+      },
+      "required": [
+        "event",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "string",
+          "const": "reattach"
+        }
+      },
+      "required": [
+        "event"
+      ]
+    }
+  ],
+  "$defs": {
+    "Anchor": {
+      "description": "Where a branch hangs off its parent. `start`/`end` are UTF-16 code-unit offsets\ninto the parent's raw markdown; for `code` they cover the whole block.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "none"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "end": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "text"
+            },
+            "start": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "start",
+            "end",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "end": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "end_line": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "code"
+            },
+            "start": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "start_line": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "start",
+            "end",
+            "start_line",
+            "end_line",
+            "text"
+          ]
+        }
+      ]
+    },
+    "DoubtType": {
+      "type": "string",
+      "enum": [
+        "simpler",
+        "example",
+        "why",
+        "deeper",
+        "wrong",
+        "free"
+      ]
+    },
+    "Edge": {
+      "type": "object",
+      "properties": {
+        "anchor": {
+          "description": "Present exactly when `type = branch`, as is `doubt_type`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Anchor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "canvas_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "collapsed": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "doubt_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DoubtType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "merge_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merged_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "source_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "target_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "$ref": "#/$defs/EdgeType"
+        }
+      },
+      "required": [
+        "id",
+        "canvas_id",
+        "source_id",
+        "target_id",
+        "type",
+        "collapsed",
+        "created_at"
+      ]
+    },
+    "EdgeType": {
+      "type": "string",
+      "enum": [
+        "reply",
+        "branch"
+      ]
+    },
+    "ErrorCode": {
+      "description": "API error codes (docs/ARCHITECTURE.md, API).",
+      "type": "string",
+      "enum": [
+        "bad_request",
+        "unauthorized",
+        "forbidden_origin",
+        "not_found",
+        "conflict",
+        "message_too_long",
+        "invalid_anchor",
+        "parent_not_complete",
+        "branch_streaming",
+        "merge_budget_exhausted",
+        "rate_limited",
+        "daily_cap_reached",
+        "llm_unavailable",
+        "unavailable"
+      ]
+    },
+    "ErrorDetail": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "Node": {
+      "type": "object",
+      "properties": {
+        "attempt": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "canvas_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "content": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "error_code": {
+          "description": "Set with `status = error` (`interrupted`, `persist_failed`, …) or `truncated` on a complete node.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position_x": {
+          "type": "number",
+          "format": "double"
+        },
+        "position_y": {
+          "type": "number",
+          "format": "double"
+        },
+        "status": {
+          "$ref": "#/$defs/NodeStatus"
+        },
+        "type": {
+          "$ref": "#/$defs/NodeType"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "canvas_id",
+        "type",
+        "content",
+        "status",
+        "attempt",
+        "position_x",
+        "position_y",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "NodeStatus": {
+      "type": "string",
+      "enum": [
+        "streaming",
+        "complete",
+        "error"
+      ]
+    },
+    "NodeType": {
+      "type": "string",
+      "enum": [
+        "user_message",
+        "ai_message"
+      ]
+    }
+  }
+}

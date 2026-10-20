@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Edge",
+  "type": "object",
+  "properties": {
+    "anchor": {
+      "description": "Present exactly when `type = branch`, as is `doubt_type`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Anchor"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "canvas_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "collapsed": {
+      "type": "boolean"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "doubt_type": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DoubtType"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "merge_summary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "merged_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "source_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "target_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "$ref": "#/$defs/EdgeType"
+    }
+  },
+  "required": [
+    "id",
+    "canvas_id",
+    "source_id",
+    "target_id",
+    "type",
+    "collapsed",
+    "created_at"
+  ],
+  "$defs": {
+    "Anchor": {
+      "description": "Where a branch hangs off its parent. `start`/`end` are UTF-16 code-unit offsets\ninto the parent's raw markdown; for `code` they cover the whole block.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "none"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "end": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "text"
+            },
+            "start": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "start",
+            "end",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "end": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "end_line": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "code"
+            },
+            "start": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "start_line": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "start",
+            "end",
+            "start_line",
+            "end_line",
+            "text"
+          ]
+        }
+      ]
+    },
+    "DoubtType": {
+      "type": "string",
+      "enum": [
+        "simpler",
+        "example",
+        "why",
+        "deeper",
+        "wrong",
+        "free"
+      ]
+    },
+    "EdgeType": {
+      "type": "string",
+      "enum": [
+        "reply",
+        "branch"
+      ]
+    }
+  }
+}

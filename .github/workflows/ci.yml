@@ -30,6 +30,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # NFR-16: cargo test regenerates packages/schemas from apps/api/src/types.rs
+      - run: git diff --exit-code packages/schemas && test -z "$(git status --porcelain packages/schemas)"
 
   web:
     runs-on: ubuntu-latest

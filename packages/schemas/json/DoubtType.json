@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DoubtType",
+  "type": "string",
+  "enum": [
+    "simpler",
+    "example",
+    "why",
+    "deeper",
+    "wrong",
+    "free"
+  ]
+}

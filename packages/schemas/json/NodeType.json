@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NodeType",
+  "type": "string",
+  "enum": [
+    "user_message",
+    "ai_message"
+  ]
+}

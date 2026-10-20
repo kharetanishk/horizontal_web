@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApiErrorBody",
+  "description": "Body of every non-2xx response and of the SSE `error` event.",
+  "type": "object",
+  "properties": {
+    "error": {
+      "$ref": "#/$defs/ErrorDetail"
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "$defs": {
+    "ErrorCode": {
+      "description": "API error codes (docs/ARCHITECTURE.md, API).",
+      "type": "string",
+      "enum": [
+        "bad_request",
+        "unauthorized",
+        "forbidden_origin",
+        "not_found",
+        "conflict",
+        "message_too_long",
+        "invalid_anchor",
+        "parent_not_complete",
+        "branch_streaming",
+        "merge_budget_exhausted",
+        "rate_limited",
+        "daily_cap_reached",
+        "llm_unavailable",
+        "unavailable"
+      ]
+    },
+    "ErrorDetail": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    }
+  }
+}

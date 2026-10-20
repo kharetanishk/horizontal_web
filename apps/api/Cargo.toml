@@ -6,9 +6,14 @@ publish = false
 
 [dependencies]
 axum = "0.8"
+chrono = { version = "0.4.45", default-features = false, features = ["serde", "std"] }
+schemars = { version = "1.2.3", features = ["uuid1", "chrono04"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate", "json", "uuid"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
-uuid = { version = "1", features = ["v7"] }
+ts-rs = { version = "12.0.1", features = ["uuid-impl", "chrono-impl", "no-serde-warnings"] }
+uuid = { version = "1", features = ["v7", "serde"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

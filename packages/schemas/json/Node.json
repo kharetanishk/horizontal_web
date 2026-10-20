@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Node",
+  "type": "object",
+  "properties": {
+    "attempt": {
+      "type": "integer",
+      "format": "int32"
+    },
+    "canvas_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "content": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "error_code": {
+      "description": "Set with `status = error` (`interrupted`, `persist_failed`, …) or `truncated` on a complete node.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "position_x": {
+      "type": "number",
+      "format": "double"
+    },
+    "position_y": {
+      "type": "number",
+      "format": "double"
+    },
+    "status": {
+      "$ref": "#/$defs/NodeStatus"
+    },
+    "type": {
+      "$ref": "#/$defs/NodeType"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "id",
+    "canvas_id",
+    "type",
+    "content",
+    "status",
+    "attempt",
+    "position_x",
+    "position_y",
+    "created_at",
+    "updated_at"
+  ],
+  "$defs": {
+    "NodeStatus": {
+      "type": "string",
+      "enum": [
+        "streaming",
+        "complete",
+        "error"
+      ]
+    },
+    "NodeType": {
+      "type": "string",
+      "enum": [
+        "user_message",
+        "ai_message"
+      ]
+    }
+  }
+}
