@@ -1,105 +1,26 @@
-//! Schema constraints, cascades and db module. Uses DATABASE_URL (a role that can CREATE DATABASE)
-//! if set, otherwise downloads and starts a throwaway Postgres. Each case gets its own fresh
-//! database, with ./migrations applied unless the case tests migrating itself.
+//! Schema constraints, cascades and db module (harness: tests/common).
 
-use std::future::Future;
+mod common;
 
+use common::{Harness, count, exec, user};
 use nodemind_api::db;
-// Test-only SQL built from generated UUIDs and literals, never from untrusted input.
+use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
-use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
 #[tokio::main]
 async fn main() {
-    let mut server = None;
-    let url = match std::env::var("DATABASE_URL") {
-        Ok(url) => url,
-        Err(_) => {
-            let mut pg = postgresql_embedded::PostgreSQL::new(postgresql_embedded::Settings {
-                version: postgresql_embedded::VersionReq::parse("=16").unwrap(), // as in compose/CI
-                installation_dir: std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
-                    .join("postgresql"),
-                timeout: Some(std::time::Duration::from_secs(60)), // first initdb on macOS is slow
-                ..Default::default()
-            });
-            pg.setup().await.expect("install embedded postgres");
-            // the downloaded archive drops tzdata hard links, including UTC; Universal is identical
-            let tz = pg.settings().installation_dir.join("share/timezone");
-            if !tz.join("UTC").exists() {
-                std::fs::copy(tz.join("Universal"), tz.join("UTC")).expect("restore UTC tzdata");
-            }
-            pg.start().await.expect("start embedded postgres");
-            let url = pg.settings().url("postgres");
-            server = Some(pg);
-            url
-        }
-    };
-    let base: PgConnectOptions = url.parse().expect("invalid DATABASE_URL");
-    let admin = PgPool::connect_with(base.clone()).await.unwrap();
-
-    let mut failed = Vec::new();
+    let mut h = Harness::start().await;
     macro_rules! run {
         ($migrate:expr => $($case:ident),*) => {$(
-            if !run(&admin, &base, stringify!($case), $migrate, $case).await {
-                failed.push(stringify!($case));
-            }
+            h.run(stringify!($case), $migrate, $case).await;
         )*};
     }
     run!(true => content_over_100k_chars_rejected, edge_type_constraints, edge_uniqueness,
         edge_cannot_cross_canvases, settled_usage_needs_token_counts, deletes_cascade,
         pgvector_not_enabled);
     run!(false => migrate_is_idempotent, pool_connections_are_utc_with_statement_timeout);
-
-    admin.close().await;
-    if let Some(pg) = server {
-        pg.stop().await.expect("stop embedded postgres");
-    }
-    if !failed.is_empty() {
-        eprintln!("failures: {failed:?}");
-        std::process::exit(1);
-    }
-}
-
-/// Runs one case in a fresh database; a panic in the case counts as failure.
-async fn run<F>(
-    admin: &PgPool,
-    base: &PgConnectOptions,
-    name: &str,
-    migrate: bool,
-    case: impl FnOnce(PgPool, PgConnectOptions) -> F,
-) -> bool
-where
-    F: Future<Output = ()> + 'static,
-{
-    let database = format!("t_{}", Uuid::now_v7().simple());
-    exec(admin, &format!("CREATE DATABASE {database}"))
-        .await
-        .unwrap();
-    let opts = base.clone().database(&database);
-    if migrate {
-        db::migrate(&opts).await.unwrap();
-    }
-    let pool = PgPool::connect_with(opts.clone()).await.unwrap();
-    // local task: catches panics without requiring the case future to be Send
-    let fut = case(pool.clone(), opts);
-    let ok = tokio::task::LocalSet::new()
-        .run_until(async { tokio::task::spawn_local(fut).await })
-        .await
-        .is_ok();
-    pool.close().await;
-    exec(admin, &format!("DROP DATABASE {database} WITH (FORCE)"))
-        .await
-        .unwrap();
-    println!("test {name} ... {}", if ok { "ok" } else { "FAILED" });
-    ok
-}
-
-async fn exec(pool: &PgPool, sql: &str) -> sqlx::Result<()> {
-    sqlx::query(AssertSqlSafe(sql.to_owned()))
-        .execute(pool)
-        .await
-        .map(drop)
+    h.finish().await;
 }
 
 /// Name of the constraint the statement violated.
@@ -111,24 +32,6 @@ async fn violated(pool: &PgPool, sql: &str) -> String {
         .and_then(|e| e.constraint())
         .unwrap_or_else(|| panic!("not a constraint violation: {err:?}"))
         .to_owned()
-}
-
-async fn count(pool: &PgPool, table: &str) -> i64 {
-    sqlx::query_scalar(AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
-        .fetch_one(pool)
-        .await
-        .unwrap()
-}
-
-async fn user(pool: &PgPool) -> Uuid {
-    let id = Uuid::now_v7();
-    exec(
-        pool,
-        &format!("INSERT INTO users (id, email) VALUES ('{id}', '{id}@test')"),
-    )
-    .await
-    .unwrap();
-    id
 }
 
 async fn canvas(pool: &PgPool, user: Uuid) -> Uuid {
