@@ -1,0 +1,19 @@
+# Local dev only: Postgres 16 with pgvector. Phase 1 needs nothing else.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: nodemind
+      POSTGRES_PASSWORD: nodemind # local-only throwaway credential, not a secret
+      POSTGRES_DB: nodemind
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nodemind"]
+      interval: 2s
+      retries: 15
+
+volumes:
+  pgdata:

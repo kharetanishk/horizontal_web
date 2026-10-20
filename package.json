@@ -1,0 +1,15 @@
+{
+  "name": "nodemind",
+  "private": true,
+  "packageManager": "pnpm@11.6.0",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "turbo": "^2.11.9"
+  }
+}

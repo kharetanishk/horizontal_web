@@ -11,6 +11,12 @@ __pycache__/
 dist/
 build/
 coverage/
+target/
+.next/
+out/
+.turbo/
+next-env.d.ts
+*.tsbuildinfo
 .DS_Store
 # factory runtime state stays local; only the config is versioned
 .factory/*
