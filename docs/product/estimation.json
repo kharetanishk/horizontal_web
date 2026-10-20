@@ -1,0 +1,30 @@
+{
+  "values": {
+    "daily_active_users": 50,
+    "requests_per_user_per_day": 200,
+    "peak_to_average": 10,
+    "peak_concurrent_user_fraction": 0.2,
+    "read_fraction": 0.7,
+    "avg_response_kb": 8,
+    "avg_write_kb": 4,
+    "retention_days": 365,
+    "avg_latency_ms": 2000,
+    "cache_hot_fraction": 0.2,
+    "egress_usd_per_gb": 0,
+    "storage_usd_per_gb_month": 0
+  },
+  "rationale": {
+    "daily_active_users": "agent proposal: Guess. Sign-up is invite-only (AC-1.1, ADR 0004) and the phase 1 gate is tested with 5 self-learners (success metrics). 50 is a generous ceiling for year one so the estimate errs high.",
+    "requests_per_user_per_day": "agent proposal: Guess. A 20-minute study session has around 20\u201340 questions (J1\u2013J4). Each question costs several calls: POST message, SSE stream, token-counter refresh (FR-12), position/collapse saves (FR-15/16, FR-19) and event logging. Add canvas list/open calls and round up.",
+    "peak_to_average": "agent proposal: Guess. Few users who study in bursts (moderated sessions, evenings), so a high ratio is the conservative choice.",
+    "peak_concurrent_user_fraction": "agent proposal: Guess. Small invite-only cohorts may run sessions at the same time, as in the moderated gate test (success metrics). 20% is high on purpose.",
+    "read_fraction": "agent proposal: Guess. Every question writes 2 nodes, 1 edge, llm_usage rows and events (FR-3, NFR-12). Position, collapse and merge saves are writes too, so reads are a lower share than in a typical web app.",
+    "avg_response_kb": "agent proposal: Guess. Most responses are small JSON or streamed answers of a few KB. Canvas opens (GET /api/canvases/:id, up to 200\u20131,000 nodes, NFR-1/NFR-3) are large, which pulls the average up.",
+    "avg_write_kb": "agent proposal: Guess. An ai_message node of about 2\u20134 KB of text, plus edge/anchor, llm_usage and event rows and index overhead (FR-19, NFR-12).",
+    "retention_days": "agent proposal: Data is kept until the user deletes it (FR-19, FR-20), with no expiry rule. Assumes it all lasts the whole first year. Backups add 7 days (NFR-11).",
+    "avg_latency_ms": "agent proposal: Guess. Most API calls take tens of ms (NFR-1: context build p95 < 200 ms), but SSE answer streams hold the request open for the whole LLM reply (FR-3; ARCHITECTURE: streaming runs in the API request). Those dominate the average, so 2 s is used.",
+    "cache_hot_fraction": "agent proposal: Guess. Users mostly reopen their recent canvases (Return metric: second day within 7 days). Older canvases are cold.",
+    "egress_usd_per_gb": "agent proposal: 0 = unknown. The host is not chosen yet (Fly.io, Render or Railway are the candidates in ARCHITECTURE/review F-L3-9).",
+    "storage_usd_per_gb_month": "agent proposal: 0 = unknown. Same reason: the Postgres host and pricing are not chosen yet."
+  }
+}
