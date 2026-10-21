@@ -27,3 +27,4 @@
 - 19:35 T12 LLM gateway and fake provider: failed (format failed)
 - 19:50 T5 Auth core: invites, sessions, login, logout: awaiting_approval (8 check(s) passed)
 - 19:50 T12 LLM gateway and fake provider: accepted (8 check(s) passed)
+- 19:52 T14 Stream registry and SSE attach: accepted (8 check(s) passed)

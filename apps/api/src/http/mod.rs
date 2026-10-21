@@ -18,6 +18,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::config::Config;
+use crate::stream::{Drain, Liveness};
 use crate::types::ErrorCode;
 use error::ApiError;
 
@@ -25,6 +26,8 @@ use error::ApiError;
 pub struct AppState {
     pub pool: PgPool,
     pub config: Arc<Config>,
+    pub liveness: Arc<Liveness>,
+    pub drain: Arc<Drain>,
 }
 
 pub fn app(state: AppState) -> Router {
@@ -71,6 +74,9 @@ pub fn app_with(extra: Router<AppState>, state: AppState) -> Router {
 
 /// Readiness: 503 `unavailable` when Postgres can't be reached.
 async fn healthz(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    if state.drain.is_draining() || !state.liveness.is_held() {
+        return Err(ApiError::Code(ErrorCode::Unavailable));
+    }
     sqlx::query("SELECT 1").execute(&state.pool).await?;
     Ok(Json(json!({ "db": "ok" })))
 }

@@ -1,10 +1,13 @@
 use std::io::Write;
 use std::sync::Arc;
+use std::time::Duration;
 
 use nodemind_api::cli;
 use nodemind_api::config::{self, Config};
 use nodemind_api::db;
 use nodemind_api::http::{self, AppState, middleware};
+use nodemind_api::stream::{Drain, Liveness, Registry, liveness, sweeper};
+use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -43,12 +46,25 @@ async fn main() {
         return;
     }
 
+    let (_, drain_secs) = config::timing_from_env();
+    let liveness = Liveness::start(direct, liveness::CHECK_EVERY)
+        .await
+        .expect("owner lock failed");
+    let drain = Arc::new(Drain::new());
+    sweeper::spawn(pool.clone(), liveness.clone(), Registry::new());
     let app = http::app(AppState {
         pool,
         config: Arc::new(config),
+        liveness,
+        drain: drain.clone(),
     });
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
         .await
         .expect("bind 0.0.0.0:8080");
-    axum::serve(listener, app).await.expect("server error");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    tokio::select! {
+        r = server => r.expect("server task").expect("server error"),
+        _ = term.recv() => drain.run(Duration::from_secs(drain_secs)).await,
+    }
 }

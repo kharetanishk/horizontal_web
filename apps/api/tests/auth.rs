@@ -60,6 +60,8 @@ fn state(pool: PgPool) -> AppState {
         config: Arc::new(Config {
             app_origin: ORIGIN.into(),
         }),
+        liveness: nodemind_api::stream::Liveness::fixed(true),
+        drain: Default::default(),
     }
 }
 
