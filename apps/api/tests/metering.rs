@@ -6,11 +6,12 @@ use std::time::Duration;
 
 use axum::response::IntoResponse;
 use common::{Harness, count, exec, user};
-use nodemind_api::error::ApiError;
+use nodemind_api::http::error::ApiError;
 use nodemind_api::metering::{
     ANSWER_RESERVE, Kind, MERGE_PROPOSAL_RESERVE, Meter, Reservation, Usage, compaction_reserve,
     settle,
 };
+use nodemind_api::types::ErrorCode;
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
 use uuid::Uuid;
@@ -60,12 +61,21 @@ async fn admit(
     }
 }
 
-fn refusal(res: Result<Reservation, ApiError>) -> &'static str {
+/// The refusal's wire code, e.g. `daily_cap_reached`.
+fn refusal(res: Result<Reservation, ApiError>) -> String {
     match res {
-        Err(ApiError::TooManyRequests { code, .. }) => code,
+        Err(ApiError::TooManyRequests { code, .. }) => wire(code),
         Err(e) => panic!("unexpected error {e:?}"),
         Ok(_) => panic!("admitted"),
     }
+}
+
+fn wire(code: ErrorCode) -> String {
+    serde_json::to_value(code)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_owned()
 }
 
 /// A settled usage row of `tokens` for today.
@@ -124,7 +134,7 @@ async fn over_cap_is_429_and_writes_nothing(pool: PgPool, _: PgConnectOptions) {
     let ApiError::TooManyRequests { code, retry_after } = err else {
         panic!("{err:?}")
     };
-    assert_eq!(code, "daily_cap_reached");
+    assert_eq!(wire(code), "daily_cap_reached");
     assert!((1..=86_400).contains(&retry_after), "{retry_after}");
     assert_eq!(count(&pool, "llm_usage").await, 1); // just the seed row
 

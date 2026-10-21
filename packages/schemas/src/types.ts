@@ -10,7 +10,7 @@ export type DoubtType = "simpler" | "example" | "why" | "deeper" | "wrong" | "fr
 
 export type Anchor = { "kind": "none" } | { "kind": "text", start: number, end: number, text: string, } | { "kind": "code", start: number, end: number, start_line: number, end_line: number, text: string, };
 
-export type ErrorCode = "bad_request" | "unauthorized" | "forbidden_origin" | "not_found" | "conflict" | "message_too_long" | "invalid_anchor" | "parent_not_complete" | "branch_streaming" | "merge_budget_exhausted" | "rate_limited" | "daily_cap_reached" | "llm_unavailable" | "unavailable";
+export type ErrorCode = "bad_request" | "unauthorized" | "forbidden_origin" | "not_found" | "conflict" | "message_too_long" | "invalid_anchor" | "parent_not_complete" | "branch_streaming" | "merge_budget_exhausted" | "rate_limited" | "daily_cap_reached" | "llm_unavailable" | "unavailable" | "internal";
 
 export type ErrorDetail = { code: ErrorCode, message: string, };
 

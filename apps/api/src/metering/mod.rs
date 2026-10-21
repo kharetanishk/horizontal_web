@@ -7,7 +7,8 @@ pub use reservation::{Reservation, Usage, settle};
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use crate::error::ApiError;
+use crate::http::error::ApiError;
+use crate::types::ErrorCode;
 
 /// Concurrent user-initiated calls allowed per user; the next one gets 429.
 pub const MAX_IN_FLIGHT: i64 = 3;
@@ -117,13 +118,13 @@ impl Meter {
         let reserve = self.reserve(kind);
         if spent_today + i64::from(reserve) > self.daily_cap {
             return Err(ApiError::TooManyRequests {
-                code: "daily_cap_reached",
+                code: ErrorCode::DailyCapReached,
                 retry_after: until_midnight.max(1) as u64,
             });
         }
         if kind != Kind::Compaction && in_flight >= MAX_IN_FLIGHT {
             return Err(ApiError::TooManyRequests {
-                code: "rate_limited",
+                code: ErrorCode::RateLimited,
                 retry_after: 1,
             });
         }

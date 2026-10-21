@@ -1,6 +1,7 @@
 //! Custom test harness shared by the DB suites. Uses DATABASE_URL (a role that can CREATE
 //! DATABASE) if set, otherwise downloads and starts a throwaway Postgres. Each case gets its
 //! own fresh database, with ./migrations applied unless the case tests migrating itself.
+#![allow(dead_code)] // each suite uses a different subset
 
 use std::future::Future;
 

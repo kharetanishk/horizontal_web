@@ -5,13 +5,16 @@ edition = "2024"
 publish = false
 
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["macros"] }
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "std"] }
 schemars = { version = "1.2.3", features = ["uuid1", "chrono04"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate", "json", "uuid"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
+tower-http = { version = "0.6", features = ["catch-panic", "set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 ts-rs = { version = "12.0.1", features = ["uuid-impl", "chrono-impl", "no-serde-warnings"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 
@@ -19,6 +22,7 @@ uuid = { version = "1", features = ["v7", "serde"] }
 tower = { version = "0.5", features = ["util"] }
 # Throwaway Postgres for tests when DATABASE_URL is unset (no Docker needed).
 postgresql_embedded = { version = "0.21", features = ["tokio"] }
+proptest = "1"
 
 # Custom harness: one Postgres server shared by all cases, stopped on exit.
 [[test]]
@@ -27,4 +31,8 @@ harness = false
 
 [[test]]
 name = "metering"
+harness = false
+
+[[test]]
+name = "http"
 harness = false

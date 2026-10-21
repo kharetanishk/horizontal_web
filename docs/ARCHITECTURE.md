@@ -293,8 +293,11 @@ Codes:
 - 409 `conflict`
 - 422 `message_too_long`, `invalid_anchor`, `parent_not_complete`, `branch_streaming`, `merge_budget_exhausted`
 - 429 `rate_limited`, `daily_cap_reached` (both with `Retry-After`)
+- 500 `internal` (caught panic, non-connection DB error)
 - 502 `llm_unavailable`
 - 503 `unavailable`
+
+Unknown routes and wrong methods return 404 `not_found` in this shape.
 
 | Method & path | Request | Response |
 | --- | --- | --- |
@@ -337,7 +340,9 @@ Rules:
   A successful login sets a signed, HttpOnly `device` cookie bound to that email. A login presenting it skips **only** the per-email delay, so attackers can't deny service to a returning user (OWASP device-cookie pattern). It stays inside the global auth bucket and the argon2 semaphore, and has its own bucket of 5/min per cookie id, so a replayed cookie can't reopen the CPU-flood path.
   The client IP comes only from `TRUSTED_IP_HEADER`, which must name a single-value header that the platform **overwrites** on every request (`Fly-Client-IP`, `CF-Connecting-IP`). Production refuses to start without it. `X-Forwarded-For` is accepted only together with `TRUSTED_PROXY_HOPS`, and is then parsed from the **right** (the entry the platform appended), never the client-seeded left. This keeps Render and Railway, which append XFF, usable ([F-L3-9](reports/reviews/architecture-L3.md)). A test asserts that a client-supplied value of that header, sent through the platform, doesn't change the limiter key ([F-L3-10](reports/reviews/architecture-L3.md)). Argon2 runs in `spawn_blocking` behind a semaphore of 2, with a bounded wait (`try_acquire` with a 2 s timeout, then 503 `unavailable` + `Retry-After`). A global auth bucket of 120/min across all IPs bounds total argon2 work, so a distributed flood degrades into fast 503s instead of an unbounded queue ([F-L3-4](reports/reviews/architecture-L3.md)). Limiter maps expire idle keys and are bounded.
 - **Daily token cap and concurrency**: the [Metering](#metering) ledger, exact.
-- **Panics**: `CatchPanicLayer` → 500. The panic hook logs only the location and `request_id`. `JsonRejection` → generic `bad_request` that echoes no input (NFR-9 test).
+- **Panics**: `CatchPanicLayer` → 500. The panic hook logs only the location, thread name and `request_id`. It is process-wide, so background-task panics also lose their message and backtrace: an accepted NFR-9 trade-off. `CatchPanicLayer` doesn't cover panics while a streaming (SSE) body is polled; stream producers must run in a guarded task. `JsonRejection` → generic `bad_request` that echoes no input (NFR-9 test).
+- **DB errors**: pool timeout/closed, I/O and TLS → 503 `unavailable`; `RowNotFound` → 404; anything else → 500 `internal`. Only the variant (`db_error`) and SQLSTATE are logged, never the driver message.
+- **`APP_ORIGIN`** is normalized at startup to what browsers send (lowercase, default port dropped); a path, query, fragment or userinfo stops startup.
 - **CSRF** ([F-L3-10](reports/reviews/architecture-L3.md)):
   - every non-GET/HEAD request must carry an `Origin` header equal to the app origin; a missing or different Origin → 403 `forbidden_origin`;
   - the cookie is `SameSite=Strict`;
@@ -398,7 +403,8 @@ Not in phase 1: self-signup, email password reset, magic links, OAuth. Single ro
 ## Observability
 
 - `tracing` JSON logs to stdout, with a `request_id` per request.
-- Log fields are an allowlist: route, status, latency_ms, user_id, canvas_id, node_id, model, prompt_tokens, completion_tokens, cached_tokens, ttft_ms, error_code, owner_key. **Never** content, anchors, summaries or emails (NFR-9, tested).
+- Log fields are an allowlist: route, status, latency_ms, user_id, canvas_id, node_id, model, prompt_tokens, completion_tokens, cached_tokens, ttft_ms, error_code, owner_key, location, thread, db_error, sqlstate, event, and `message` (fixed text only). **Never** content, anchors, summaries or emails (NFR-9, tested).
+- Levels: INFO for `nodemind_api`, WARN for dependencies. Dependency events lose `message`, since their text may interpolate data (tested).
 - Engine signals: `compaction_on_critical_path`, `compaction_fallback`, `budget_enforced`, `reclaimed_after_sweep`, `final_write_failed`, `usage_estimated`. A cache hit ratio is derived as `cached_tokens / prompt_tokens`.
 - NFR-2 (TTFT) and NFR-12 (cost) are computed with SQL over `llm_usage` and logs. There is no metrics stack in phase 1.
 - An uptime check on `/api/healthz` emails the owner (NFR-10).

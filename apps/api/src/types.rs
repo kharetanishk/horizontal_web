@@ -77,6 +77,8 @@ pub enum ErrorCode {
     DailyCapReached,
     LlmUnavailable,
     Unavailable,
+    // 500, e.g. a caught panic. A `///` doc here would turn the JSON Schema enum into oneOf.
+    Internal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]

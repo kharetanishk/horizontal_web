@@ -17,6 +17,7 @@
     "rate_limited",
     "daily_cap_reached",
     "llm_unavailable",
-    "unavailable"
+    "unavailable",
+    "internal"
   ]
 }
