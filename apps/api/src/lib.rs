@@ -6,4 +6,5 @@ pub mod db;
 pub mod http;
 pub mod llm;
 pub mod metering;
+pub mod stream;
 pub mod types;

@@ -30,6 +30,7 @@ tower = { version = "0.5", features = ["util"] }
 # Throwaway Postgres for tests when DATABASE_URL is unset (no Docker needed).
 postgresql_embedded = { version = "0.21", features = ["tokio"] }
 proptest = "1"
+tokio = { version = "1", features = ["test-util"] }
 
 # Custom harness: one Postgres server shared by all cases, stopped on exit.
 [[test]]
