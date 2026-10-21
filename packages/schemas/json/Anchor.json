@@ -18,16 +18,16 @@
     {
       "type": "object",
       "properties": {
-        "end": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
         "kind": {
           "type": "string",
           "const": "text"
         },
         "start": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end": {
           "type": "integer",
           "format": "uint32",
           "minimum": 0
@@ -46,16 +46,6 @@
     {
       "type": "object",
       "properties": {
-        "end": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "end_line": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
         "kind": {
           "type": "string",
           "const": "code"
@@ -65,7 +55,17 @@
           "format": "uint32",
           "minimum": 0
         },
+        "end": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
         "start_line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_line": {
           "type": "integer",
           "format": "uint32",
           "minimum": 0

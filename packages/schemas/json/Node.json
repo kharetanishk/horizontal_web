@@ -3,20 +3,22 @@
   "title": "Node",
   "type": "object",
   "properties": {
-    "attempt": {
-      "type": "integer",
-      "format": "int32"
+    "id": {
+      "type": "string",
+      "format": "uuid"
     },
     "canvas_id": {
       "type": "string",
       "format": "uuid"
     },
+    "type": {
+      "$ref": "#/$defs/NodeType"
+    },
     "content": {
       "type": "string"
     },
-    "created_at": {
-      "type": "string",
-      "format": "date-time"
+    "status": {
+      "$ref": "#/$defs/NodeStatus"
     },
     "error_code": {
       "description": "Set with `status = error` (`interrupted`, `persist_failed`, …) or `truncated` on a complete node.",
@@ -25,9 +27,9 @@
         "null"
       ]
     },
-    "id": {
-      "type": "string",
-      "format": "uuid"
+    "attempt": {
+      "type": "integer",
+      "format": "int32"
     },
     "model": {
       "type": [
@@ -43,11 +45,9 @@
       "type": "number",
       "format": "double"
     },
-    "status": {
-      "$ref": "#/$defs/NodeStatus"
-    },
-    "type": {
-      "$ref": "#/$defs/NodeType"
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
     },
     "updated_at": {
       "type": "string",
@@ -67,19 +67,19 @@
     "updated_at"
   ],
   "$defs": {
+    "NodeType": {
+      "type": "string",
+      "enum": [
+        "user_message",
+        "ai_message"
+      ]
+    },
     "NodeStatus": {
       "type": "string",
       "enum": [
         "streaming",
         "complete",
         "error"
-      ]
-    },
-    "NodeType": {
-      "type": "string",
-      "enum": [
-        "user_message",
-        "ai_message"
       ]
     }
   }

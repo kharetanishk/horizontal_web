@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::sync::Arc;
 
+use nodemind_api::cli;
 use nodemind_api::config::{self, Config};
 use nodemind_api::db;
 use nodemind_api::http::{self, AppState, middleware};
@@ -22,6 +23,25 @@ async fn main() {
     db::migrate(&direct).await.expect("migrations failed");
     let pool = db::connect(pooled).await.expect("database connect failed");
     middleware::install_panic_hook();
+
+    // Operator commands: `invite <email>`, `reset-password <email>`.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(cmd) = args.first() {
+        let email = args.get(1).map(String::as_str).unwrap_or_default();
+        let link = match cmd.as_str() {
+            "invite" => cli::invite(&pool, &config, email).await,
+            "reset-password" => cli::reset_password(&pool, &config, email).await,
+            _ => Err("usage: api invite|reset-password <email>".into()),
+        };
+        match link {
+            Ok(link) => println!("{link}"),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     let app = http::app(AppState {
         pool,

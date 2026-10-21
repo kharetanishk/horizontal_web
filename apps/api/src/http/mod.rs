@@ -35,6 +35,7 @@ fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/livez", get(|| async {}))
         .route("/api/healthz", get(healthz))
+        .merge(crate::auth::routes::routes())
 }
 
 /// [`routes`] plus `extra` (tests add their own) in the shared stack. Outermost

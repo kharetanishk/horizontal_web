@@ -12,6 +12,21 @@
     "error"
   ],
   "$defs": {
+    "ErrorDetail": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
     "ErrorCode": {
       "description": "API error codes (docs/ARCHITECTURE.md, API).",
       "type": "string",
@@ -31,21 +46,6 @@
         "llm_unavailable",
         "unavailable",
         "internal"
-      ]
-    },
-    "ErrorDetail": {
-      "type": "object",
-      "properties": {
-        "code": {
-          "$ref": "#/$defs/ErrorCode"
-        },
-        "message": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "code",
-        "message"
       ]
     }
   }

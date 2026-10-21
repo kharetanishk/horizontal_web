@@ -6,19 +6,23 @@
     {
       "type": "object",
       "properties": {
+        "event": {
+          "type": "string",
+          "const": "created"
+        },
         "data": {
           "type": "object",
           "properties": {
-            "edges": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/Edge"
-              }
-            },
             "nodes": {
               "type": "array",
               "items": {
                 "$ref": "#/$defs/Node"
+              }
+            },
+            "edges": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Edge"
               }
             }
           },
@@ -26,10 +30,6 @@
             "nodes",
             "edges"
           ]
-        },
-        "event": {
-          "type": "string",
-          "const": "created"
         }
       },
       "required": [
@@ -40,6 +40,10 @@
     {
       "type": "object",
       "properties": {
+        "event": {
+          "type": "string",
+          "const": "snapshot"
+        },
         "data": {
           "type": "object",
           "properties": {
@@ -50,10 +54,6 @@
           "required": [
             "node"
           ]
-        },
-        "event": {
-          "type": "string",
-          "const": "snapshot"
         }
       },
       "required": [
@@ -64,6 +64,10 @@
     {
       "type": "object",
       "properties": {
+        "event": {
+          "type": "string",
+          "const": "delta"
+        },
         "data": {
           "type": "object",
           "properties": {
@@ -74,10 +78,6 @@
           "required": [
             "text"
           ]
-        },
-        "event": {
-          "type": "string",
-          "const": "delta"
         }
       },
       "required": [
@@ -88,26 +88,26 @@
     {
       "type": "object",
       "properties": {
+        "event": {
+          "type": "string",
+          "const": "done"
+        },
         "data": {
           "type": "object",
           "properties": {
+            "node": {
+              "$ref": "#/$defs/Node"
+            },
             "context_tokens": {
               "type": "integer",
               "format": "uint32",
               "minimum": 0
-            },
-            "node": {
-              "$ref": "#/$defs/Node"
             }
           },
           "required": [
             "node",
             "context_tokens"
           ]
-        },
-        "event": {
-          "type": "string",
-          "const": "done"
         }
       },
       "required": [
@@ -118,6 +118,10 @@
     {
       "type": "object",
       "properties": {
+        "event": {
+          "type": "string",
+          "const": "error"
+        },
         "data": {
           "type": "object",
           "properties": {
@@ -132,10 +136,6 @@
             "error",
             "node"
           ]
-        },
-        "event": {
-          "type": "string",
-          "const": "error"
         }
       },
       "required": [
@@ -157,6 +157,169 @@
     }
   ],
   "$defs": {
+    "Node": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "canvas_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "$ref": "#/$defs/NodeType"
+        },
+        "content": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/NodeStatus"
+        },
+        "error_code": {
+          "description": "Set with `status = error` (`interrupted`, `persist_failed`, …) or `truncated` on a complete node.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attempt": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position_x": {
+          "type": "number",
+          "format": "double"
+        },
+        "position_y": {
+          "type": "number",
+          "format": "double"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "canvas_id",
+        "type",
+        "content",
+        "status",
+        "attempt",
+        "position_x",
+        "position_y",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "NodeType": {
+      "type": "string",
+      "enum": [
+        "user_message",
+        "ai_message"
+      ]
+    },
+    "NodeStatus": {
+      "type": "string",
+      "enum": [
+        "streaming",
+        "complete",
+        "error"
+      ]
+    },
+    "Edge": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "canvas_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "target_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "$ref": "#/$defs/EdgeType"
+        },
+        "anchor": {
+          "description": "Present exactly when `type = branch`, as is `doubt_type`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Anchor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "doubt_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DoubtType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "merge_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merged_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "collapsed": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "canvas_id",
+        "source_id",
+        "target_id",
+        "type",
+        "collapsed",
+        "created_at"
+      ]
+    },
+    "EdgeType": {
+      "type": "string",
+      "enum": [
+        "reply",
+        "branch"
+      ]
+    },
     "Anchor": {
       "description": "Where a branch hangs off its parent. `start`/`end` are UTF-16 code-unit offsets\ninto the parent's raw markdown; for `code` they cover the whole block.",
       "oneOf": [
@@ -175,16 +338,16 @@
         {
           "type": "object",
           "properties": {
-            "end": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
             "kind": {
               "type": "string",
               "const": "text"
             },
             "start": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "end": {
               "type": "integer",
               "format": "uint32",
               "minimum": 0
@@ -203,16 +366,6 @@
         {
           "type": "object",
           "properties": {
-            "end": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "end_line": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
             "kind": {
               "type": "string",
               "const": "code"
@@ -222,7 +375,17 @@
               "format": "uint32",
               "minimum": 0
             },
+            "end": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
             "start_line": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "end_line": {
               "type": "integer",
               "format": "uint32",
               "minimum": 0
@@ -253,85 +416,19 @@
         "free"
       ]
     },
-    "Edge": {
+    "ErrorDetail": {
       "type": "object",
       "properties": {
-        "anchor": {
-          "description": "Present exactly when `type = branch`, as is `doubt_type`.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Anchor"
-            },
-            {
-              "type": "null"
-            }
-          ]
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
         },
-        "canvas_id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "collapsed": {
-          "type": "boolean"
-        },
-        "created_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "doubt_type": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/DoubtType"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "merge_summary": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "merged_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
-        },
-        "source_id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "target_id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "type": {
-          "$ref": "#/$defs/EdgeType"
+        "message": {
+          "type": "string"
         }
       },
       "required": [
-        "id",
-        "canvas_id",
-        "source_id",
-        "target_id",
-        "type",
-        "collapsed",
-        "created_at"
-      ]
-    },
-    "EdgeType": {
-      "type": "string",
-      "enum": [
-        "reply",
-        "branch"
+        "code",
+        "message"
       ]
     },
     "ErrorCode": {
@@ -353,103 +450,6 @@
         "llm_unavailable",
         "unavailable",
         "internal"
-      ]
-    },
-    "ErrorDetail": {
-      "type": "object",
-      "properties": {
-        "code": {
-          "$ref": "#/$defs/ErrorCode"
-        },
-        "message": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "code",
-        "message"
-      ]
-    },
-    "Node": {
-      "type": "object",
-      "properties": {
-        "attempt": {
-          "type": "integer",
-          "format": "int32"
-        },
-        "canvas_id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "content": {
-          "type": "string"
-        },
-        "created_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "error_code": {
-          "description": "Set with `status = error` (`interrupted`, `persist_failed`, …) or `truncated` on a complete node.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "model": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "position_x": {
-          "type": "number",
-          "format": "double"
-        },
-        "position_y": {
-          "type": "number",
-          "format": "double"
-        },
-        "status": {
-          "$ref": "#/$defs/NodeStatus"
-        },
-        "type": {
-          "$ref": "#/$defs/NodeType"
-        },
-        "updated_at": {
-          "type": "string",
-          "format": "date-time"
-        }
-      },
-      "required": [
-        "id",
-        "canvas_id",
-        "type",
-        "content",
-        "status",
-        "attempt",
-        "position_x",
-        "position_y",
-        "created_at",
-        "updated_at"
-      ]
-    },
-    "NodeStatus": {
-      "type": "string",
-      "enum": [
-        "streaming",
-        "complete",
-        "error"
-      ]
-    },
-    "NodeType": {
-      "type": "string",
-      "enum": [
-        "user_message",
-        "ai_message"
       ]
     }
   }

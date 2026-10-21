@@ -3,6 +3,25 @@
   "title": "Edge",
   "type": "object",
   "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "canvas_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "source_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "target_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "$ref": "#/$defs/EdgeType"
+    },
     "anchor": {
       "description": "Present exactly when `type = branch`, as is `doubt_type`.",
       "anyOf": [
@@ -14,17 +33,6 @@
         }
       ]
     },
-    "canvas_id": {
-      "type": "string",
-      "format": "uuid"
-    },
-    "collapsed": {
-      "type": "boolean"
-    },
-    "created_at": {
-      "type": "string",
-      "format": "date-time"
-    },
     "doubt_type": {
       "anyOf": [
         {
@@ -34,10 +42,6 @@
           "type": "null"
         }
       ]
-    },
-    "id": {
-      "type": "string",
-      "format": "uuid"
     },
     "merge_summary": {
       "type": [
@@ -52,16 +56,12 @@
       ],
       "format": "date-time"
     },
-    "source_id": {
-      "type": "string",
-      "format": "uuid"
+    "collapsed": {
+      "type": "boolean"
     },
-    "target_id": {
+    "created_at": {
       "type": "string",
-      "format": "uuid"
-    },
-    "type": {
-      "$ref": "#/$defs/EdgeType"
+      "format": "date-time"
     }
   },
   "required": [
@@ -74,6 +74,13 @@
     "created_at"
   ],
   "$defs": {
+    "EdgeType": {
+      "type": "string",
+      "enum": [
+        "reply",
+        "branch"
+      ]
+    },
     "Anchor": {
       "description": "Where a branch hangs off its parent. `start`/`end` are UTF-16 code-unit offsets\ninto the parent's raw markdown; for `code` they cover the whole block.",
       "oneOf": [
@@ -92,16 +99,16 @@
         {
           "type": "object",
           "properties": {
-            "end": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
             "kind": {
               "type": "string",
               "const": "text"
             },
             "start": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "end": {
               "type": "integer",
               "format": "uint32",
               "minimum": 0
@@ -120,16 +127,6 @@
         {
           "type": "object",
           "properties": {
-            "end": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "end_line": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
             "kind": {
               "type": "string",
               "const": "code"
@@ -139,7 +136,17 @@
               "format": "uint32",
               "minimum": 0
             },
+            "end": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
             "start_line": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "end_line": {
               "type": "integer",
               "format": "uint32",
               "minimum": 0
@@ -168,13 +175,6 @@
         "deeper",
         "wrong",
         "free"
-      ]
-    },
-    "EdgeType": {
-      "type": "string",
-      "enum": [
-        "reply",
-        "branch"
       ]
     }
   }

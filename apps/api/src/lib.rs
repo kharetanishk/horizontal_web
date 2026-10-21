@@ -1,6 +1,9 @@
+pub mod auth;
+pub mod cli;
 pub mod config;
 pub mod context;
 pub mod db;
 pub mod http;
+pub mod llm;
 pub mod metering;
 pub mod types;

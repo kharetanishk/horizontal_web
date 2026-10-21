@@ -24,15 +24,29 @@ _Auto-generated from recorded factory state. Do not edit inside this block._
 
 **Stage:** implementation (Implementation) · profile `standard`
 
-**Verified & accepted work:** none yet
+**Verified & accepted work:**
+- T1 Monorepo skeleton with test commands (`5aad63f8`)
+- T2 Database schema migrations and db module (`dcb97fa8`)
+- T3 Shared domain types with ts-rs and schemars generation (`f0eb7b0e`)
+- T10 Context: anchors, prompts and quick-action templates (`c47fbe32`)
+- T13 Metering ledger and Reservation guard (`75a11748`)
 
 **Open risks:**
+- task T12 failed: Claude Code run agent_error
 - F-architecture-L3-1 (high): Advisory-lock liveness depends on a direct connection, but DATABASE_URL_DIRECT is optional
 - F-architecture-L3-2 (medium): The 15-minute reservation safety net assumes tasks end by TASK_DEADLINE_SECS, but the final write retries without limit
 - F-architecture-L3-3 (medium): Device-cookie signing key is missing from config
 - F-architecture-L3-4 (medium): NFR-11 'a completed node is never lost' can't hold with daily backups only
 - F-architecture-L3-5 (medium): Canvas load recomputes the full prompt assembly for every node
+- F-t2-L3-1 (medium): Migrations silently fall back to the pooled DATABASE_URL, though production requires DATABASE_URL_DIRECT
+- F-t2-L3-2 (medium): 10 s pool statement_timeout is not in the architecture
+- F-t4-L3-1 (medium): Connection-level Postgres failures reported as SQLSTATE get 500 `internal` instead of 503 `unavailable`
+- F-t4-L3-2 (medium): Only `Json` has a safe rejection; `Path`/`Query`/`Form` rejections echo input as plain text outside the error shape
 
 **Next:**
-- `factory run` to continue the implementation phase
+- T4 HTTP foundation: router, errors, CSRF, headers, logging (awaiting_approval)
+- T5 Auth core: invites, sessions, login, logout (pending)
+- T6 Auth abuse protection and rate limiter (pending)
+- T7 Canvas CRUD, meta endpoint and ownership tests (pending)
+- T8 Account deletion endpoint (pending)
 <!-- factory:status:end -->
